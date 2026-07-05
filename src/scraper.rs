@@ -348,11 +348,11 @@ pub async fn scrape_tpb_html(
 
 #[derive(Deserialize, Debug)]
 pub struct ApibayTorrent {
-    pub name: String,
-    pub info_hash: String,
-    pub size: String,
-    pub seeders: String,
-    pub leechers: String,
+    pub name: Option<String>,
+    pub info_hash: Option<String>,
+    pub size: Option<serde_json::Value>,
+    pub seeders: Option<serde_json::Value>,
+    pub leechers: Option<serde_json::Value>,
 }
 
 /// Scrapes APIBay for torrents using its JSON API
@@ -373,36 +373,49 @@ pub async fn scrape_apibay(
         Err(_) => return streams,
     };
     
-    let torrents: Vec<ApibayTorrent> = match resp.json().await {
+    let text = match resp.text().await {
+        Ok(t) => t,
+        Err(_) => return streams,
+    };
+
+    let torrents: Vec<ApibayTorrent> = match serde_json::from_str(&text) {
         Ok(t) => t,
         Err(_) => return streams,
     };
     
     for torrent in torrents {
-        if torrent.name.is_empty() || torrent.info_hash.is_empty() || torrent.name == "No results found" {
+        let name = torrent.name.unwrap_or_default();
+        let info_hash = torrent.info_hash.unwrap_or_default();
+        if name.is_empty() || info_hash.is_empty() || name == "No results found" {
             continue;
         }
         
-        let hash = torrent.info_hash.to_lowercase();
-        let quality = detect_quality(&torrent.name);
-        let size_formatted = format_size(&torrent.size);
-        let seeds = torrent.seeders.parse::<u32>().unwrap_or(0);
+        let hash = info_hash.to_lowercase();
+        let quality = detect_quality(&name);
+        
+        let size_str = torrent.size.map(|v| get_json_string(&v)).unwrap_or_default();
+        let size_formatted = format_size(&size_str);
+        
+        let seeds_str = torrent.seeders.map(|v| get_json_string(&v)).unwrap_or_default();
+        let seeds = seeds_str.parse::<u32>().unwrap_or(0);
         if seeds == 0 {
             continue;
         }
-        let peers = torrent.leechers.parse::<u32>().unwrap_or(0);
+        
+        let peers_str = torrent.leechers.map(|v| get_json_string(&v)).unwrap_or_default();
+        let peers = peers_str.parse::<u32>().unwrap_or(0);
         
         let seeds_display = format!("{} seeders", seeds);
         let leechers_display = format!("{} peers", peers);
         
-        let magnet = build_magnet_url(&hash, &torrent.name);
-        let sources = get_sources_for_torrent(&hash, &torrent.name);
+        let magnet = build_magnet_url(&hash, &name);
+        let sources = get_sources_for_torrent(&hash, &name);
         streams.push(Stream {
             name: format!("[Bitlab] {}", quality),
             title: format!(
                 "🎬 {}: {}\n📦 {}\n👥 {} | 📥 {}\n⚡ Magnet (P2P Stream)",
                 provider_label,
-                torrent.name,
+                name,
                 size_formatted,
                 seeds_display,
                 leechers_display
@@ -482,7 +495,7 @@ pub async fn scrape_nyaa(client: &reqwest::Client, query: &str) -> Vec<Stream> {
     streams
 }
 
-/// Scrapes EZTV API for series episodes using IMDb ID
+/// Scrapes EZTV API for series episodes using IMDb ID (with pagination)
 pub async fn scrape_eztv(
     client: &reqwest::Client,
     imdb_id: &str,
@@ -491,75 +504,101 @@ pub async fn scrape_eztv(
 ) -> Vec<Stream> {
     let mut streams = Vec::new();
     let clean_imdb_id = imdb_id.strip_prefix("tt").unwrap_or(imdb_id);
-    let url = format!("https://eztv.re/api/get-torrents?imdb_id={}", clean_imdb_id);
     
-    let req = client.get(&url)
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+    // EZTV paginates at 30 per page — fetch up to 5 pages to cover long-running shows
+    for page in 1..=5 {
+        let url = format!(
+            "https://eztv.re/api/get-torrents?imdb_id={}&limit=30&page={}",
+            clean_imdb_id, page
+        );
         
-    let resp_text = match req.send().await {
-        Ok(resp) => match resp.text().await {
-            Ok(t) => t,
-            Err(_) => return streams,
-        },
-        Err(_) => return streams,
-    };
-    
-    let json_val: serde_json::Value = match serde_json::from_str(&resp_text) {
-        Ok(v) => v,
-        Err(_) => return streams,
-    };
-    
-    let torrents = match json_val.get("torrents") {
-        Some(t) => match t.as_array() {
-            Some(arr) => arr,
-            None => return streams,
-        },
-        None => return streams,
-    };
-    
-    for item in torrents {
-        let hash = get_json_string(item.get("hash").unwrap_or(&serde_json::Value::Null));
-        let title = get_json_string(item.get("title").unwrap_or(&serde_json::Value::Null));
-        let season_str = get_json_string(item.get("season").unwrap_or(&serde_json::Value::Null));
-        let episode_str = get_json_string(item.get("episode").unwrap_or(&serde_json::Value::Null));
-        let seeds = get_json_u32(item.get("seeds").unwrap_or(&serde_json::Value::Null), 0);
-        let peers = get_json_u32(item.get("peers").unwrap_or(&serde_json::Value::Null), 0);
-        let size_bytes_str = get_json_string(item.get("size_bytes").unwrap_or(&serde_json::Value::Null));
+        let req = client.get(&url)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+            
+        let resp_text = match req.send().await {
+            Ok(resp) => match resp.text().await {
+                Ok(t) => t,
+                Err(_) => break,
+            },
+            Err(_) => break,
+        };
         
-        if hash.is_empty() || title.is_empty() || seeds == 0 {
-            continue;
+        let json_val: serde_json::Value = match serde_json::from_str(&resp_text) {
+            Ok(v) => v,
+            Err(_) => break,
+        };
+        
+        let torrents = match json_val.get("torrents") {
+            Some(t) => match t.as_array() {
+                Some(arr) => arr,
+                None => break,
+            },
+            None => break,
+        };
+
+        if torrents.is_empty() {
+            break;
         }
         
-        let season = season_str.parse::<u32>().unwrap_or(0);
-        let episode = episode_str.parse::<u32>().unwrap_or(0);
-        
-        if season != target_season || episode != target_episode {
-            continue;
+        for item in torrents {
+            let hash = get_json_string(item.get("hash").unwrap_or(&serde_json::Value::Null));
+            let title = get_json_string(item.get("title").unwrap_or(&serde_json::Value::Null));
+            let season_str = get_json_string(item.get("season").unwrap_or(&serde_json::Value::Null));
+            let episode_str = get_json_string(item.get("episode").unwrap_or(&serde_json::Value::Null));
+            let seeds = get_json_u32(item.get("seeds").unwrap_or(&serde_json::Value::Null), 0);
+            let peers = get_json_u32(item.get("peers").unwrap_or(&serde_json::Value::Null), 0);
+            let size_bytes_str = get_json_string(item.get("size_bytes").unwrap_or(&serde_json::Value::Null));
+            
+            if hash.is_empty() || title.is_empty() {
+                continue;
+            }
+            
+            let season = season_str.parse::<u32>().unwrap_or(0);
+            let episode = episode_str.parse::<u32>().unwrap_or(0);
+            
+            if season != target_season || episode != target_episode {
+                continue;
+            }
+            
+            let size_formatted = format_size(&size_bytes_str);
+            let quality = detect_quality(&title);
+            
+            let peers_info = if seeds == 0 {
+                "👥 Active (EZTV Swarm)".to_string()
+            } else {
+                format!("👥 {} seeders | 📥 {} peers", seeds, peers)
+            };
+            
+            let magnet = build_magnet_url(&hash, &title);
+            let sources = get_sources_for_torrent(&hash, &title);
+            streams.push(Stream {
+                name: format!("[Bitlab] {}", quality),
+                title: format!(
+                    "📺 EZTV: {}\n📦 {}\n{}\n⚡ Magnet (P2P Stream)",
+                    title,
+                    size_formatted,
+                    peers_info
+                ),
+                url: Some(magnet),
+                info_hash: Some(hash.to_lowercase()),
+                file_idx: None,
+                sources: Some(sources),
+                behavior_hints: None,
+            });
         }
-        
-        let size_formatted = format_size(&size_bytes_str);
-        let quality = detect_quality(&title);
-        
-        let seeds_display = format!("{} seeders", seeds);
-        let leechers_display = format!("{} peers", peers);
-        
-        let magnet = build_magnet_url(&hash, &title);
-        let sources = get_sources_for_torrent(&hash, &title);
-        streams.push(Stream {
-            name: format!("[Bitlab] {}", quality),
-            title: format!(
-                "📺 EZTV: {}\n📦 {}\n👥 {} | 📥 {}\n⚡ Magnet (P2P Stream)",
-                title,
-                size_formatted,
-                seeds_display,
-                leechers_display
-            ),
-            url: Some(magnet),
-            info_hash: Some(hash.to_lowercase()),
-            file_idx: None,
-            sources: Some(sources),
-            behavior_hints: None,
-        });
+
+        // If we already found matches for this episode, no need for more pages
+        if !streams.is_empty() {
+            break;
+        }
+
+        // Check if there are more pages
+        let total_count = json_val.get("torrents_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        if (page as u64) * 30 >= total_count {
+            break;
+        }
     }
     
     streams
@@ -625,71 +664,91 @@ async fn fetch_kitsu_romaji_title(client: &reqwest::Client, english_title: &str)
 pub async fn get_movie_streams(
     client: &reqwest::Client,
     meta_cache: &std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, (String, Option<String>)>>>,
+    stream_cache: &std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, (Vec<Stream>, std::time::Instant)>>>,
     imdb_id: &str,
 ) -> Vec<Stream> {
+    // Check stream cache
+    {
+        let cache = stream_cache.read().await;
+        if let Some((streams, timestamp)) = cache.get(imdb_id) {
+            if timestamp.elapsed().as_secs() < 1800 {
+                println!("[INFO] Returning cached streams for movie: {}", imdb_id);
+                return streams.clone();
+            }
+        }
+    }
+
     println!("[INFO] Resolving streams for movie: {}", imdb_id);
     let start_time = std::time::Instant::now();
     
+    // Spawn ID-based scrapes immediately in parallel
     let client_yts = client.clone();
-    let client_tpb = client.clone();
-    let client_meta = client.clone();
-    let client_nyaa = client.clone();
     let imdb_id_clone = imdb_id.to_string();
+    let yts_handle = tokio::spawn(async move {
+        scrape_yts_movies(&client_yts, &imdb_id_clone).await
+    });
+
+    let client_apibay_id = client.clone();
+    let imdb_id_clone2 = imdb_id.to_string();
+    let apibay_id_handle = tokio::spawn(async move {
+        scrape_apibay(&client_apibay_id, &imdb_id_clone2, "APIBay").await
+    });
     
-    let yts_fut = scrape_yts_movies(&client_yts, &imdb_id_clone);
-    let tpb_direct_fut = scrape_tpb_html(&client_tpb, &imdb_id_clone, "TPB");
-    let meta_fut = fetch_meta_cached(&client_meta, meta_cache, "movie", &imdb_id_clone);
-    
-    let (yts_res, tpb_direct_res, meta_res) = tokio::join!(
-        tokio::time::timeout(std::time::Duration::from_millis(2000), yts_fut),
-        tokio::time::timeout(std::time::Duration::from_millis(3000), tpb_direct_fut),
-        meta_fut
-    );
-    
-    let mut all_streams = Vec::new();
-    
-    if let Ok(streams) = yts_res {
-        println!("[INFO] YTS scraper finished. Found {} streams.", streams.len());
-        all_streams.extend(streams);
-    }
-    
-    let mut tpb_streams = Vec::new();
-    if let Ok(streams) = tpb_direct_res {
-        tpb_streams = streams;
-    }
-    
-    if let Some((name, year)) = meta_res {
-        let cleaned = clean_title(&name);
-        
-        let kitsu_title = fetch_kitsu_romaji_title(&client_meta, &name).await;
+    let client_meta = client.clone();
+    let meta_cache_clone = meta_cache.clone();
+    let imdb_id_clone3 = imdb_id.to_string();
+    let meta_handle = tokio::spawn(async move {
+        fetch_meta_cached(&client_meta, &meta_cache_clone, "movie", &imdb_id_clone3).await
+    });
+
+    // Await metadata fetch
+    let meta_res = match tokio::time::timeout(std::time::Duration::from_millis(2000), meta_handle).await {
+        Ok(Ok(Some(meta))) => Some(meta),
+        _ => None,
+    };
+
+    let mut title_handles = Vec::new();
+    if let Some((name, year)) = &meta_res {
+        let cleaned = clean_title(name);
+        let client_kitsu = client.clone();
+        let name_clone = name.clone();
+        let kitsu_title_fut = async move {
+            fetch_kitsu_romaji_title(&client_kitsu, &name_clone).await
+        };
+        let kitsu_title = kitsu_title_fut.await;
         let cleaned_romaji = kitsu_title.map(|t| clean_title(&t));
         
-        let query = if let Some(yr) = &year {
+        let query = if let Some(yr) = year {
             format!("{} {}", cleaned, yr)
         } else {
             cleaned.clone()
         };
-        
-        let run_tpb_title = tpb_streams.is_empty();
-        
-        let tpb_title_fut = async {
-            if run_tpb_title {
-                println!("[INFO] Querying TPB HTML for movie by title search: \"{}\"", query);
-                scrape_tpb_html(&client_tpb, &query, "TPB").await
-            } else {
-                Vec::new()
-            }
-        };
-        
-        let nyaa_fut = async {
-            let q1 = query.clone();
-            let q2 = cleaned_romaji.clone();
-            
-            let fut1 = scrape_nyaa(&client_nyaa, &q1);
+
+        // TPB Title Search
+        let client_tpb = client.clone();
+        let query_tpb = query.clone();
+        title_handles.push(tokio::spawn(async move {
+            scrape_tpb_html(&client_tpb, &query_tpb, "TPB").await
+        }));
+
+        // APIBay Title Search
+        let client_apibay = client.clone();
+        let query_apibay = query.clone();
+        title_handles.push(tokio::spawn(async move {
+            scrape_apibay(&client_apibay, &query_apibay, "APIBay").await
+        }));
+
+        // Nyaa RSS Search (Anime)
+        let client_nyaa = client.clone();
+        let query_nyaa = query.clone();
+        let cleaned_romaji_clone = cleaned_romaji.clone();
+        let year_clone = year.clone();
+        title_handles.push(tokio::spawn(async move {
+            let fut1 = scrape_nyaa(&client_nyaa, &query_nyaa);
             let fut2 = async {
-                if let Some(q) = &q2 {
+                if let Some(q) = &cleaned_romaji_clone {
                     let mut q_with_yr = q.clone();
-                    if let Some(yr) = &year {
+                    if let Some(yr) = &year_clone {
                         q_with_yr = format!("{} {}", q, yr);
                     }
                     scrape_nyaa(&client_nyaa, &q_with_yr).await
@@ -697,7 +756,6 @@ pub async fn get_movie_streams(
                     Vec::new()
                 }
             };
-            
             let (res1, res2) = tokio::join!(fut1, fut2);
             let mut combined = res1;
             for stream in res2 {
@@ -706,59 +764,55 @@ pub async fn get_movie_streams(
                 }
             }
             combined
-        };
-        
-        let client_apibay = client.clone();
-        let apibay_title_fut = async {
-            println!("[INFO] Querying APIBay for movie by title search: \"{}\"", query);
-            scrape_apibay(&client_apibay, &query, "APIBay").await
-        };
-        
-        let (tpb_title_res, nyaa_res, apibay_res) = tokio::join!(
-            tokio::time::timeout(std::time::Duration::from_millis(5500), tpb_title_fut),
-            tokio::time::timeout(std::time::Duration::from_millis(5500), nyaa_fut),
-            tokio::time::timeout(std::time::Duration::from_millis(5500), apibay_title_fut)
-        );
-        
-        if let Ok(streams) = tpb_title_res {
-            tpb_streams.extend(streams);
-        }
-        
-        if let Ok(streams) = nyaa_res {
-            for stream in streams {
-                if !all_streams.iter().any(|s| s.info_hash == stream.info_hash) {
-                    all_streams.push(stream);
-                }
+        }));
+    }
+
+    let mut all_streams = Vec::new();
+
+    // Gather YTS results
+    if let Ok(Ok(streams)) = tokio::time::timeout(std::time::Duration::from_millis(2500), yts_handle).await {
+        all_streams.extend(streams);
+    }
+
+    // Gather APIBay ID results
+    if let Ok(Ok(streams)) = tokio::time::timeout(std::time::Duration::from_millis(2500), apibay_id_handle).await {
+        for s in streams {
+            if !all_streams.iter().any(|x| x.info_hash == s.info_hash) {
+                all_streams.push(s);
             }
         }
-        
-        if let Ok(streams) = apibay_res {
-            for stream in streams {
-                if !all_streams.iter().any(|s| s.info_hash == stream.info_hash) {
-                    all_streams.push(stream);
+    }
+
+    // Gather Title-based search results
+    for handle in title_handles {
+        if let Ok(Ok(streams)) = tokio::time::timeout(std::time::Duration::from_millis(3000), handle).await {
+            for s in streams {
+                if !all_streams.iter().any(|x| x.info_hash == s.info_hash) {
+                    all_streams.push(s);
                 }
             }
         }
     }
-    
-    for stream in tpb_streams {
-        if !all_streams.iter().any(|s| s.info_hash == stream.info_hash) {
-            all_streams.push(stream);
-        }
-    }
-    
+
+    // Sort by seeders descending
     all_streams.sort_by(|a, b| {
         let a_seeds = extract_seeds(&a.title);
         let b_seeds = extract_seeds(&b.title);
         b_seeds.cmp(&a_seeds)
     });
-    
+
     println!(
         "[INFO] Movie stream resolution completed in {}ms. Returning {} total streams.",
         start_time.elapsed().as_millis(),
         all_streams.len()
     );
-    
+
+    // Save to cache
+    {
+        let mut cache = stream_cache.write().await;
+        cache.insert(imdb_id.to_string(), (all_streams.clone(), std::time::Instant::now()));
+    }
+
     all_streams
 }
 
@@ -766,198 +820,168 @@ pub async fn get_movie_streams(
 pub async fn get_series_streams(
     client: &reqwest::Client,
     meta_cache: &std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, (String, Option<String>)>>>,
+    stream_cache: &std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, (Vec<Stream>, std::time::Instant)>>>,
     imdb_id: &str,
     season: u32,
     episode: u32,
 ) -> Vec<Stream> {
+    let cache_key = format!("{}:{}:{}", imdb_id, season, episode);
+    {
+        let cache = stream_cache.read().await;
+        if let Some((streams, timestamp)) = cache.get(&cache_key) {
+            if timestamp.elapsed().as_secs() < 1800 {
+                println!("[INFO] Returning cached streams for series: {}", cache_key);
+                return streams.clone();
+            }
+        }
+    }
+
     println!("[INFO] Resolving streams for series: {} S{:02}E{:02}", imdb_id, season, episode);
     let start_time = std::time::Instant::now();
     
-    let client_clone = client.clone();
+    // Spawn EZTV ID search immediately
+    let client_eztv = client.clone();
+    let imdb_id_eztv = imdb_id.to_string();
+    let eztv_handle = tokio::spawn(async move {
+        scrape_eztv(&client_eztv, &imdb_id_eztv, season, episode).await
+    });
+    
+    let client_meta = client.clone();
+    let meta_cache_clone = meta_cache.clone();
     let imdb_id_clone = imdb_id.to_string();
-    
-    // Create EZTV query future with timeout
-    let eztv_fut = scrape_eztv(&client_clone, &imdb_id_clone, season, episode);
-    let eztv_timeout_fut = tokio::time::timeout(std::time::Duration::from_millis(5500), eztv_fut);
-    
-    let meta_and_scrapes_fut = async {
-        let mut other_streams = Vec::new();
-        // Fetch series metadata from Cinemeta or Cache
-        let meta_res = fetch_meta_cached(&client_clone, meta_cache, "series", &imdb_id_clone).await;
-        
-        if let Some((name, _)) = meta_res {
-            let cleaned = clean_title(&name);
-            
-            let kitsu_title = fetch_kitsu_romaji_title(&client_clone, &name).await;
-            let cleaned_romaji = kitsu_title.map(|t| clean_title(&t));
-            
-            let query1 = format!("{} S{:02}E{:02}", cleaned, season, episode);
-            let query2 = format!("{} {}x{:02}", cleaned, season, episode);
-            
-            let nyaa_query1 = format!("{} S{:02}E{:02}", cleaned, season, episode);
-            let nyaa_query2 = format!("{} {:02}", cleaned, episode);
-            let nyaa_query3 = cleaned_romaji.as_ref().map(|romaji| format!("{} {:02}", romaji, episode));
-            let nyaa_query4 = cleaned_romaji.as_ref().map(|romaji| format!("{} S{:02}E{:02}", romaji, season, episode));
-            
-            println!("[INFO] Searching TPB and Nyaa for series episode: \"{}\"", cleaned);
-            
-            let client_tpb = client_clone.clone();
-            let query1_tpb = query1.clone();
-            let query2_tpb = query2.clone();
-            let tpb_fut = async move {
-                let (res1, res2) = tokio::join!(
-                    scrape_tpb_html(&client_tpb, &query1_tpb, "TPB"),
-                    scrape_tpb_html(&client_tpb, &query2_tpb, "TPB")
-                );
-                let mut combined = res1;
-                for stream in res2 {
-                    if !combined.iter().any(|s| s.info_hash == stream.info_hash) {
-                        combined.push(stream);
-                    }
-                }
-                combined
-            };
-            
-            let client_nyaa = client_clone.clone();
-            let nyaa_fut = async move {
-                let q1 = nyaa_query1;
-                let q2 = nyaa_query2;
-                let q3 = nyaa_query3;
-                let q4 = nyaa_query4;
-                
-                let fut1 = scrape_nyaa(&client_nyaa, &q1);
-                let fut2 = scrape_nyaa(&client_nyaa, &q2);
-                let fut3 = async {
-                    if let Some(q) = &q3 {
-                        scrape_nyaa(&client_nyaa, q).await
-                    } else {
-                        Vec::new()
-                    }
-                };
-                let fut4 = async {
-                    if let Some(q) = &q4 {
-                        scrape_nyaa(&client_nyaa, q).await
-                    } else {
-                        Vec::new()
-                    }
-                };
-                
-                let (res1, res2, res3, res4) = tokio::join!(fut1, fut2, fut3, fut4);
-                
-                let mut combined = res1;
-                for stream in res2 {
-                    if !combined.iter().any(|s| s.info_hash == stream.info_hash) {
-                        combined.push(stream);
-                    }
-                }
-                for stream in res3 {
-                    if !combined.iter().any(|s| s.info_hash == stream.info_hash) {
-                        combined.push(stream);
-                    }
-                }
-                for stream in res4 {
-                    if !combined.iter().any(|s| s.info_hash == stream.info_hash) {
-                        combined.push(stream);
-                    }
-                }
-                combined
-            };
-            
-            let client_apibay = client_clone.clone();
-            let query1_apibay = query1; // consume query1
-            let query2_apibay = query2; // consume query2
-            let apibay_fut = async move {
-                let (res1, res2) = tokio::join!(
-                    scrape_apibay(&client_apibay, &query1_apibay, "APIBay"),
-                    scrape_apibay(&client_apibay, &query2_apibay, "APIBay")
-                );
-                let mut combined = res1;
-                for stream in res2 {
-                    if !combined.iter().any(|s| s.info_hash == stream.info_hash) {
-                        combined.push(stream);
-                    }
-                }
-                combined
-            };
-            
-            let (tpb_res, nyaa_res, apibay_res) = tokio::join!(
-                tokio::time::timeout(std::time::Duration::from_millis(5500), tpb_fut),
-                tokio::time::timeout(std::time::Duration::from_millis(5500), nyaa_fut),
-                tokio::time::timeout(std::time::Duration::from_millis(5500), apibay_fut)
-            );
-            
-            match tpb_res {
-                Ok(streams) => {
-                    println!("[INFO] TPB scraper finished. Found {} streams.", streams.len());
-                    other_streams.extend(streams);
-                }
-                Err(_) => {
-                    println!("[WARN] TPB scraper timed out.");
-                }
-            }
-            
-            match nyaa_res {
-                Ok(streams) => {
-                    println!("[INFO] Nyaa scraper finished. Found {} streams.", streams.len());
-                    for stream in streams {
-                        if !other_streams.iter().any(|s| s.info_hash == stream.info_hash) {
-                            other_streams.push(stream);
-                        }
-                    }
-                }
-                Err(_) => {
-                    println!("[WARN] Nyaa scraper timed out.");
-                }
-            }
-            
-            match apibay_res {
-                Ok(streams) => {
-                    println!("[INFO] APIBay scraper finished. Found {} streams.", streams.len());
-                    for stream in streams {
-                        if !other_streams.iter().any(|s| s.info_hash == stream.info_hash) {
-                            other_streams.push(stream);
-                        }
-                    }
-                }
-                Err(_) => {
-                    println!("[WARN] APIBay scraper timed out.");
-                }
-            }
-        } else {
-            println!("[WARN] Failed to fetch series metadata from Cinemeta or request timed out for {}", imdb_id_clone);
-        }
-        
-        other_streams
+    let meta_handle = tokio::spawn(async move {
+        fetch_meta_cached(&client_meta, &meta_cache_clone, "series", &imdb_id_clone).await
+    });
+
+    // Await metadata fetch
+    let meta_res = match tokio::time::timeout(std::time::Duration::from_millis(2000), meta_handle).await {
+        Ok(Ok(Some(meta))) => Some(meta),
+        _ => None,
     };
-    
-    // Concurrently run EZTV query and meta/scrapes
-    let (eztv_res, other_res) = tokio::join!(
-        eztv_timeout_fut,
-        meta_and_scrapes_fut
-    );
-    
-    let eztv_streams = eztv_res.unwrap_or_default();
-    println!("[INFO] EZTV scraper finished. Found {} streams.", eztv_streams.len());
-    
-    let mut all_streams = eztv_streams;
-    for stream in other_res {
-        if !all_streams.iter().any(|s| s.info_hash == stream.info_hash) {
-            all_streams.push(stream);
+
+    let mut title_handles = Vec::new();
+    if let Some((name, _)) = &meta_res {
+        let cleaned = clean_title(name);
+        let client_kitsu = client.clone();
+        let name_clone = name.clone();
+        let kitsu_title_fut = async move {
+            fetch_kitsu_romaji_title(&client_kitsu, &name_clone).await
+        };
+        let kitsu_title = kitsu_title_fut.await;
+        let cleaned_romaji = kitsu_title.map(|t| clean_title(&t));
+
+        // Format 1: "Show Name S01E01"
+        let query1 = format!("{} S{:02}E{:02}", cleaned, season, episode);
+        // Format 2: "Show Name 1x01"
+        let query2 = format!("{} {}x{:02}", cleaned, season, episode);
+
+        // APIBay Title searches
+        let client_apibay1 = client.clone();
+        let q1_apibay = query1.clone();
+        title_handles.push(tokio::spawn(async move {
+            scrape_apibay(&client_apibay1, &q1_apibay, "APIBay").await
+        }));
+
+        let client_apibay2 = client.clone();
+        let q2_apibay = query2.clone();
+        title_handles.push(tokio::spawn(async move {
+            scrape_apibay(&client_apibay2, &q2_apibay, "APIBay").await
+        }));
+
+        // TPB Title searches
+        let client_tpb1 = client.clone();
+        let q1_tpb = query1.clone();
+        title_handles.push(tokio::spawn(async move {
+            scrape_tpb_html(&client_tpb1, &q1_tpb, "TPB").await
+        }));
+
+        let client_tpb2 = client.clone();
+        let q2_tpb = query2.clone();
+        title_handles.push(tokio::spawn(async move {
+            scrape_tpb_html(&client_tpb2, &q2_tpb, "TPB").await
+        }));
+
+        // Nyaa Search (Anime)
+        let client_nyaa = client.clone();
+        let q1_nyaa = query1.clone();
+        let q2_nyaa = format!("{} {:02}", cleaned, episode);
+        let cleaned_romaji_clone1 = cleaned_romaji.clone();
+        let cleaned_romaji_clone2 = cleaned_romaji.clone();
+        title_handles.push(tokio::spawn(async move {
+            let fut1 = scrape_nyaa(&client_nyaa, &q1_nyaa);
+            let fut2 = scrape_nyaa(&client_nyaa, &q2_nyaa);
+            let fut3 = async {
+                if let Some(romaji) = &cleaned_romaji_clone1 {
+                    scrape_nyaa(&client_nyaa, &format!("{} {:02}", romaji, episode)).await
+                } else {
+                    Vec::new()
+                }
+            };
+            let fut4 = async {
+                if let Some(romaji) = &cleaned_romaji_clone2 {
+                    scrape_nyaa(&client_nyaa, &format!("{} S{:02}E{:02}", romaji, season, episode)).await
+                } else {
+                    Vec::new()
+                }
+            };
+            let (r1, r2, r3, r4) = tokio::join!(fut1, fut2, fut3, fut4);
+            let mut combined = r1;
+            for s in r2 {
+                if !combined.iter().any(|x| x.info_hash == s.info_hash) {
+                    combined.push(s);
+                }
+            }
+            for s in r3 {
+                if !combined.iter().any(|x| x.info_hash == s.info_hash) {
+                    combined.push(s);
+                }
+            }
+            for s in r4 {
+                if !combined.iter().any(|x| x.info_hash == s.info_hash) {
+                    combined.push(s);
+                }
+            }
+            combined
+        }));
+    }
+
+    let mut all_streams = Vec::new();
+
+    // Gather EZTV results
+    if let Ok(Ok(streams)) = tokio::time::timeout(std::time::Duration::from_millis(2500), eztv_handle).await {
+        all_streams.extend(streams);
+    }
+
+    // Gather Title-based search results
+    for handle in title_handles {
+        if let Ok(Ok(streams)) = tokio::time::timeout(std::time::Duration::from_millis(3000), handle).await {
+            for s in streams {
+                if !all_streams.iter().any(|x| x.info_hash == s.info_hash) {
+                    all_streams.push(s);
+                }
+            }
         }
     }
-    
+
+    // Sort by seeders descending
     all_streams.sort_by(|a, b| {
         let a_seeds = extract_seeds(&a.title);
         let b_seeds = extract_seeds(&b.title);
         b_seeds.cmp(&a_seeds)
     });
-    
+
     println!(
         "[INFO] Series stream resolution completed in {}ms. Returning {} total streams.",
         start_time.elapsed().as_millis(),
         all_streams.len()
     );
-    
+
+    // Save to cache
+    {
+        let mut cache = stream_cache.write().await;
+        cache.insert(cache_key, (all_streams.clone(), std::time::Instant::now()));
+    }
+
     all_streams
 }
 
@@ -1066,4 +1090,6 @@ mod tests {
             Err(e) => println!("Send error: {:?}", e),
         }
     }
+
 }
+

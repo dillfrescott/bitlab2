@@ -1,5 +1,5 @@
 # Multi-stage build to keep the runner image small and clean
-FROM rust:1.80-slim-bookworm AS builder
+FROM rust:1.85-slim-bookworm AS builder
 
 WORKDIR /usr/src/app
 

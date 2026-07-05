@@ -76,6 +76,11 @@ fn build_magnet_url(info_hash: &str, display_name: &str) -> String {
 
 fn clean_title(title: &str) -> String {
     title
+        .replace('\'', "")
+        .replace('’', "")
+        .replace('‘', "")
+        .replace('`', "")
+        .replace('´', "")
         .replace(|c: char| !c.is_alphanumeric() && c != ' ', " ")
         .split_whitespace()
         .collect::<Vec<&str>>()
@@ -384,4 +389,21 @@ fn extract_seeds(title: &str) -> u32 {
         }
     }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clean_title() {
+        assert_eq!(clean_title("Clarkson's Farm"), "Clarksons Farm");
+        assert_eq!(clean_title("Grey's Anatomy"), "Greys Anatomy");
+        assert_eq!(clean_title("It’s Always Sunny in Philadelphia"), "Its Always Sunny in Philadelphia");
+        assert_eq!(clean_title("Spider-Man"), "Spider Man");
+        assert_eq!(clean_title("S.W.A.T."), "S W A T");
+        assert_eq!(clean_title("Marvel's Agents of S.H.I.E.L.D."), "Marvels Agents of S H I E L D");
+        assert_eq!(clean_title("Bob`s Burgers"), "Bobs Burgers");
+        assert_eq!(clean_title("Doctor Who (2005)"), "Doctor Who 2005");
+    }
 }

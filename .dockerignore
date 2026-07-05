@@ -1,0 +1,7 @@
+# Exclude target build directories and Git repository files
+target/
+.git/
+.gitignore
+Dockerfile
+fly.toml
+.dockerignore

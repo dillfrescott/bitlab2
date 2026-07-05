@@ -15,9 +15,14 @@ use stremio::{Catalog, CatalogResponse, Manifest, StreamResponse};
 use std::net::SocketAddr;
 use tower_http::cors::{Any, CorsLayer};
 
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
 #[derive(Clone)]
 struct AppState {
     client: reqwest::Client,
+    meta_cache: Arc<RwLock<HashMap<String, (String, Option<String>)>>>,
 }
 
 #[tokio::main]
@@ -30,6 +35,7 @@ async fn main() {
             .timeout(std::time::Duration::from_secs(4))
             .build()
             .unwrap(),
+        meta_cache: Arc::new(RwLock::new(HashMap::new())),
     };
 
     // Configure CORS
@@ -118,7 +124,7 @@ async fn stream_handler(
 
     let streams = match r#type.as_str() {
         "movie" => {
-            scraper::get_movie_streams(&state.client, clean_id).await
+            scraper::get_movie_streams(&state.client, &state.meta_cache, clean_id).await
         }
         "series" => {
             // Series IDs are formatted as imdb_id:season:episode
@@ -127,7 +133,7 @@ async fn stream_handler(
                 let imdb_id = parts[0];
                 let season = parts[1].parse::<u32>().unwrap_or(1);
                 let episode = parts[2].parse::<u32>().unwrap_or(1);
-                scraper::get_series_streams(&state.client, imdb_id, season, episode).await
+                scraper::get_series_streams(&state.client, &state.meta_cache, imdb_id, season, episode).await
             } else {
                 Vec::new()
             }

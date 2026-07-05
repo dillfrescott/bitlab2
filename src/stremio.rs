@@ -77,6 +77,8 @@ pub struct Stream {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_idx: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub sources: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub behavior_hints: Option<BehaviorHints>,
 }
 

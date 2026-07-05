@@ -120,7 +120,7 @@ pub async fn scrape_yts_movies(client: &reqwest::Client, imdb_id: &str) -> Vec<S
                                 };
                                 
                                 streams.push(Stream {
-                                    name: format!("[🚀 AG] {}", quality),
+                                    name: format!("[Bitlab] {}", quality),
                                     title: format!(
                                         "🎬 YTS: {}\n📦 {}\n{}\n⚡ Magnet (P2P Stream)",
                                         movie.title,
@@ -213,7 +213,7 @@ pub async fn scrape_tpb_html(
         let quality = detect_quality(&name);
         
         streams.push(Stream {
-            name: format!("[🚀 AG] {}", quality),
+            name: format!("[Bitlab] {}", quality),
             title: format!(
                 "🎬 {}: {}\n📦 {}\n👥 {} seeders | 📥 {} peers\n⚡ Magnet (P2P Stream)",
                 provider_label,

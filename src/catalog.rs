@@ -1,6 +1,5 @@
 use crate::stremio::MetaPreview;
 use crate::cinemeta::fetch_meta;
-use serde::Deserialize;
 use std::collections::HashSet;
 use regex::Regex;
 
@@ -42,7 +41,10 @@ const FALLBACK_SHOWS: &[(&str, &str)] = &[
 ];
 
 /// Get popular movies using the IMDb moviemeter scrape & Cinemeta
-pub async fn get_popular_movies(client: &reqwest::Client) -> Vec<MetaPreview> {
+pub async fn get_popular_movies(
+    client: &reqwest::Client,
+    meta_cache: &std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, (String, Option<String>)>>>,
+) -> Vec<MetaPreview> {
     let mut imdb_ids = Vec::new();
     
     // Attempt to scrape IMDb moviemeter
@@ -82,29 +84,24 @@ pub async fn get_popular_movies(client: &reqwest::Client) -> Vec<MetaPreview> {
 
     for id in imdb_ids {
         let client_clone = client.clone();
+        let meta_cache_clone = meta_cache.clone();
         futures.push(tokio::spawn(async move {
-            if let Some((name, year)) = fetch_meta(&client_clone, "movie", &id).await {
-                let meta_url = format!("https://v3-cinemeta.strem.io/meta/movie/{}.json", id);
-                if let Ok(meta_resp) = client_clone.get(&meta_url).send().await {
-                    #[derive(Deserialize)]
-                    struct CMeta { poster: Option<String>, description: Option<String>, imdb_rating: Option<String> }
-                    #[derive(Deserialize)]
-                    struct CResp { meta: Option<CMeta> }
-                    if let Ok(c_json) = meta_resp.json::<CResp>().await {
-                        if let Some(meta) = c_json.meta {
-                            return Some(MetaPreview {
-                                id: id.clone(),
-                                r#type: "movie".to_string(),
-                                name,
-                                poster: meta.poster,
-                                poster_shape: Some("poster".to_string()),
-                                release_info: year,
-                                imdb_rating: meta.imdb_rating,
-                                description: meta.description,
-                            });
-                        }
-                    }
+            if let Some(meta) = fetch_meta(&client_clone, "movie", &id).await {
+                // Populate the meta cache for future streaming requests
+                {
+                    let mut cache = meta_cache_clone.write().await;
+                    cache.insert(id.clone(), (meta.name.clone(), meta.year.clone()));
                 }
+                return Some(MetaPreview {
+                    id: id.clone(),
+                    r#type: "movie".to_string(),
+                    name: meta.name,
+                    poster: meta.poster,
+                    poster_shape: Some("poster".to_string()),
+                    release_info: meta.year,
+                    imdb_rating: meta.imdb_rating,
+                    description: meta.description,
+                });
             }
             None
         }));
@@ -138,7 +135,10 @@ pub async fn get_popular_movies(client: &reqwest::Client) -> Vec<MetaPreview> {
 
 /// Scrapes popular TV shows from IMDb tvmeter or falls back to a curated list,
 /// then fetches their metadata from Cinemeta to populate details
-pub async fn get_popular_series(client: &reqwest::Client) -> Vec<MetaPreview> {
+pub async fn get_popular_series(
+    client: &reqwest::Client,
+    meta_cache: &std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, (String, Option<String>)>>>,
+) -> Vec<MetaPreview> {
     let mut imdb_ids = Vec::new();
     
     // Attempt to scrape IMDb tvmeter
@@ -178,30 +178,24 @@ pub async fn get_popular_series(client: &reqwest::Client) -> Vec<MetaPreview> {
 
     for id in imdb_ids {
         let client_clone = client.clone();
+        let meta_cache_clone = meta_cache.clone();
         futures.push(tokio::spawn(async move {
-            if let Some((name, year)) = fetch_meta(&client_clone, "series", &id).await {
-                // Fetch details for poster URL. Cinemeta's raw endpoint has poster
-                let meta_url = format!("https://v3-cinemeta.strem.io/meta/series/{}.json", id);
-                if let Ok(meta_resp) = client_clone.get(&meta_url).send().await {
-                    #[derive(Deserialize)]
-                    struct CMeta { poster: Option<String>, description: Option<String>, imdb_rating: Option<String> }
-                    #[derive(Deserialize)]
-                    struct CResp { meta: Option<CMeta> }
-                    if let Ok(c_json) = meta_resp.json::<CResp>().await {
-                        if let Some(meta) = c_json.meta {
-                            return Some(MetaPreview {
-                                id: id.clone(),
-                                r#type: "series".to_string(),
-                                name,
-                                poster: meta.poster,
-                                poster_shape: Some("poster".to_string()),
-                                release_info: year,
-                                imdb_rating: meta.imdb_rating,
-                                description: meta.description,
-                            });
-                        }
-                    }
+            if let Some(meta) = fetch_meta(&client_clone, "series", &id).await {
+                // Populate the meta cache for future streaming requests
+                {
+                    let mut cache = meta_cache_clone.write().await;
+                    cache.insert(id.clone(), (meta.name.clone(), meta.year.clone()));
                 }
+                return Some(MetaPreview {
+                    id: id.clone(),
+                    r#type: "series".to_string(),
+                    name: meta.name,
+                    poster: meta.poster,
+                    poster_shape: Some("poster".to_string()),
+                    release_info: meta.year,
+                    imdb_rating: meta.imdb_rating,
+                    description: meta.description,
+                });
             }
             None
         }));

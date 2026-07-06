@@ -106,10 +106,10 @@ async fn catalog_handler(
 
     let metas = match (r#type.as_str(), clean_id) {
         ("movie", "popular_movies") => {
-            catalog::get_popular_movies(&state.client).await
+            catalog::get_popular_movies(&state.client, &state.meta_cache).await
         }
         ("series", "popular_series") => {
-            catalog::get_popular_series(&state.client).await
+            catalog::get_popular_series(&state.client, &state.meta_cache).await
         }
         _ => Vec::new(),
     };

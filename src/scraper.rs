@@ -172,16 +172,18 @@ const PUBLIC_TRACKERS: &[&str] = &[
     "udp://tracker.bittor.co:80/announce",
 ];
 
-fn get_sources_for_torrent(_info_hash: &str, _name: &str) -> Vec<String> {
+fn get_sources_for_torrent(info_hash: &str, _name: &str) -> Vec<String> {
     let mut sources = Vec::new();
+    sources.push(format!("dht:{}", info_hash));
     for tracker in PUBLIC_TRACKERS {
         sources.push(format!("tracker:{}", tracker));
     }
     sources
 }
 
-fn extract_trackers_from_magnet(magnet: &str) -> Vec<String> {
+fn extract_trackers_from_magnet(magnet: &str, info_hash: &str) -> Vec<String> {
     let mut sources = Vec::new();
+    sources.push(format!("dht:{}", info_hash));
     for t in PUBLIC_TRACKERS {
         sources.push(format!("tracker:{}", t));
     }
@@ -381,7 +383,7 @@ async fn scrape_single_tpb(
         let seeds_display = format!("{} seeders", seeds);
         let leechers_display = format!("{} peers", leechers);
         
-        let sources = extract_trackers_from_magnet(magnet);
+        let sources = extract_trackers_from_magnet(magnet, &info_hash);
         let normalized_magnet = build_magnet_url(&info_hash, &name);
         streams.push(Stream {
             name: format!("[Bitlab] {}", quality),
@@ -586,7 +588,7 @@ async fn scrape_single_solidtorrent(
                         let seeds_display = format!("{} seeders", seeds);
                         let leechers_display = format!("{} peers", leechers);
                         
-                        let sources = extract_trackers_from_magnet(&magnet);
+                        let sources = extract_trackers_from_magnet(&magnet, &info_hash);
                         let normalized_magnet = build_magnet_url(&info_hash, &title);
                         streams.push(Stream {
                             name: format!("[Bitlab] {}", quality),

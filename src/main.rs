@@ -165,7 +165,10 @@ async fn stream_handler(
         _ => Vec::new(),
     };
 
-    Json(StreamResponse { streams })
+    let mut headers = HeaderMap::new();
+    headers.insert("Cache-Control", "max-age=0, no-cache, no-store, must-revalidate".parse().unwrap());
+    
+    (headers, Json(StreamResponse { streams })).into_response()
 }
 
 async fn landing_handler(headers: HeaderMap) -> impl IntoResponse {

@@ -244,7 +244,7 @@ async fn scrape_single_yts(client: reqwest::Client, url: String) -> Vec<Stream> 
                                 };
                                 
                                 let sources = get_sources_for_torrent(&torrent.hash, &movie.title);
-                                let magnet = build_magnet_url(&torrent.hash, &movie.title);
+                                let _magnet = build_magnet_url(&torrent.hash, &movie.title);
                                 streams.push(Stream {
                                     name: format!("[Bitlab] {}", quality),
                                     title: format!(
@@ -372,7 +372,7 @@ async fn scrape_single_tpb(
         let leechers_display = format!("{} peers", leechers);
         
         let sources = extract_trackers_from_magnet(magnet, &info_hash);
-        let normalized_magnet = build_magnet_url(&info_hash, &name);
+        let _normalized_magnet = build_magnet_url(&info_hash, &name);
         streams.push(Stream {
             name: format!("[Bitlab] {}", quality),
             title: format!(
@@ -494,7 +494,7 @@ pub async fn scrape_apibay(
         let leechers_display = format!("{} peers", peers);
         
         let sources = get_sources_for_torrent(&hash, &name);
-        let magnet = build_magnet_url(&hash, &name);
+        let _magnet = build_magnet_url(&hash, &name);
         streams.push(Stream {
             name: format!("[Bitlab] {}", quality),
             title: format!(
@@ -577,7 +577,7 @@ async fn scrape_single_solidtorrent(
                         let leechers_display = format!("{} peers", leechers);
                         
                         let sources = extract_trackers_from_magnet(&magnet, &info_hash);
-                        let normalized_magnet = build_magnet_url(&info_hash, &title);
+                        let _normalized_magnet = build_magnet_url(&info_hash, &title);
                         streams.push(Stream {
                             name: format!("[Bitlab] {}", quality),
                             title: format!(
@@ -674,7 +674,7 @@ async fn scrape_single_nyaa(client: reqwest::Client, url: String) -> Vec<Stream>
                     let quality = detect_quality(&title);
                     
                     let sources = get_sources_for_torrent(&hash, &title);
-                    let magnet = build_magnet_url(&hash, &title);
+                    let _magnet = build_magnet_url(&hash, &title);
                     streams.push(Stream {
                         name: format!("[Bitlab] {}", quality),
                         title: format!(
@@ -805,7 +805,7 @@ async fn scrape_single_eztv(
             };
             
             let sources = get_sources_for_torrent(&hash, &title);
-            let magnet = build_magnet_url(&hash, &title);
+            let _magnet = build_magnet_url(&hash, &title);
             streams.push(Stream {
                 name: format!("[Bitlab] {}", quality),
                 title: format!(
@@ -906,7 +906,7 @@ pub async fn fetch_meta_cached(
     }
 }
 
-async fn fetch_kitsu_romaji_title(client: &reqwest::Client, english_title: &str) -> Option<String> {
+async fn check_if_anime_and_get_romaji(client: &reqwest::Client, english_title: &str, target_year: Option<&str>) -> (bool, Option<String>) {
     let encoded = urlencoding::encode(english_title);
     let url = format!("https://kitsu.io/api/edge/anime?filter[text]={}", encoded);
     let req = client.get(&url)
@@ -914,16 +914,64 @@ async fn fetch_kitsu_romaji_title(client: &reqwest::Client, english_title: &str)
         .header("Accept", "application/vnd.api+json")
         .header("Content-Type", "application/vnd.api+json");
     
-    let resp = req.send().await.ok()?;
-    if resp.status().is_success() {
-        let json: serde_json::Value = resp.json().await.ok()?;
-        if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
-            if let Some(first) = data.first() {
-                if let Some(attributes) = first.get("attributes") {
-                    if let Some(titles) = attributes.get("titles") {
-                        if let Some(en_jp) = titles.get("en_jp").and_then(|t| t.as_str()) {
-                            if en_jp.to_lowercase() != english_title.to_lowercase() {
-                                  return Some(en_jp.to_string());
+    if let Ok(resp) = req.send().await {
+        if resp.status().is_success() {
+            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
+                    let target = english_title.to_lowercase();
+                    for item in data.iter().take(3) {
+                        if let Some(attributes) = item.get("attributes") {
+                            let mut is_match = false;
+                            let mut romaji_title = None;
+                            
+                            if let Some(canonical) = attributes.get("canonicalTitle").and_then(|t| t.as_str()) {
+                                if canonical.to_lowercase() == target {
+                                    is_match = true;
+                                }
+                            }
+                            
+                            if let Some(titles) = attributes.get("titles") {
+                                if let Some(en) = titles.get("en").and_then(|t| t.as_str()) {
+                                    if en.to_lowercase() == target { is_match = true; }
+                                }
+                                if let Some(en_us) = titles.get("en_us").and_then(|t| t.as_str()) {
+                                    if en_us.to_lowercase() == target { is_match = true; }
+                                }
+                                if let Some(en_jp) = titles.get("en_jp").and_then(|t| t.as_str()) {
+                                    romaji_title = Some(en_jp.to_string());
+                                    if en_jp.to_lowercase() == target { is_match = true; }
+                                }
+                            }
+                            
+                            if is_match {
+                                if let Some(t_year_str) = target_year {
+                                    let clean_t = t_year_str.chars().take_while(|c| c.is_ascii_digit()).collect::<String>();
+                                    if let Ok(t_year) = clean_t.parse::<i32>() {
+                                        if let Some(start_date) = attributes.get("startDate").and_then(|d| d.as_str()) {
+                                            if let Some(year_str) = start_date.split('-').next() {
+                                                if let Ok(k_year) = year_str.parse::<i32>() {
+                                                    // Anime release dates can be slightly off, but Live Action is 24 years apart
+                                                    if (t_year - k_year).abs() > 2 {
+                                                        is_match = false;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            if is_match {
+                                let romaji_to_return = if let Some(rt) = &romaji_title {
+                                    if rt.to_lowercase() != target {
+                                        Some(rt.clone())
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                };
+                                return (true, romaji_to_return);
                             }
                         }
                     }
@@ -931,7 +979,7 @@ async fn fetch_kitsu_romaji_title(client: &reqwest::Client, english_title: &str)
             }
         }
     }
-    None
+    (false, None)
 }
 
 fn is_special_or_ova_mismatch(torrent_title: &str, show_name: &str, target_season: u32) -> bool {
@@ -1099,12 +1147,110 @@ fn parse_torrent_info(title: &str) -> TorrentInfo {
     TorrentInfo { seasons, episodes, is_pack }
 }
 
+fn is_torrent_mismatch(torrent_title: &str, show_name: &str, romaji_name: Option<&str>, target_year: Option<&str>) -> bool {
+    let t_clean = clean_title(&torrent_title.to_lowercase());
+    
+    let mut base_title = t_clean.clone();
+    if let Ok(re) = Regex::new(r"\b(s\d+e\d+|s\d+|ep?\d+|\d+x\d+|season\s*\d+|episode\s*\d+|19\d{2}|20\d{2}|1080p|720p|2160p|4k)\b") {
+        if let Some(m) = re.find(&t_clean) {
+            base_title = t_clean[..m.start()].trim().to_string();
+        }
+    }
+    
+    let ignore_words = ["the", "and", "for", "with", "from", "into", "upon", "a", "an", "of", "in", "to"];
+    let s_clean = clean_title(&show_name.to_lowercase());
+    let mut sig_words: Vec<String> = s_clean.split_whitespace().filter(|w| w.len() > 1 && !ignore_words.contains(w)).map(|w| w.to_string()).collect();
+    
+    if let Some(r_name) = romaji_name {
+        let r_clean = clean_title(&r_name.to_lowercase());
+        for w in r_clean.split_whitespace().filter(|w| w.len() > 1 && !ignore_words.contains(w)) {
+            sig_words.push(w.to_string());
+        }
+    }
+    
+    if !sig_words.is_empty() {
+        let base_words: Vec<&str> = base_title.split_whitespace().collect();
+        let mut has_overlap = false;
+        for sw in &sig_words {
+            if base_words.contains(&sw.as_str()) {
+                has_overlap = true;
+                break;
+            }
+        }
+        if !has_overlap {
+            return true; 
+        }
+    }
+    
+    let check_spinoff = |name: &str| -> Option<bool> {
+        let clean_name = clean_title(&name.to_lowercase());
+        if let Some(idx) = t_clean.find(&clean_name) {
+            let after_match = &t_clean[idx + clean_name.len()..];
+            let words: Vec<&str> = after_match.split_whitespace().collect();
+            if let Some(&w) = words.first() {
+                if w.parse::<u32>().is_ok() { return Some(false); }
+                let tags = [
+                    "s", "e", "se", "ep", "season", "episode", "complete", "batch", "part", "pt", "vol", "volume",
+                    "1080p", "720p", "2160p", "4k", "hd", "fhd", "uhd", "bluray", "blu", "ray", "brrip", "bdrip",
+                    "web", "webrip", "webdl", "dvd", "dvdrip", "x264", "h264", "x265", "hevc", "10bit", "dual", "audio",
+                    "sub", "subs", "dub", "dubbed", "eng", "english", "raw", "raws", "uncensored", "cen", "uncen",
+                    "remux", "amzn", "nf", "dsnp", "hulu", "max", "tv", "movie", "film", "ova", "oad", "special",
+                    "v2", "v3", "v4", "xvid", "divx", "aac", "flac", "mp3", "mkv", "mp4", "avi", "us", "uk", "jp",
+                    "book", "ch", "chapter", "cour"
+                ];
+                if tags.contains(&w) { return Some(false); }
+                if let Ok(re) = Regex::new(r"^(?:s\d+|e\d+|ep\d+|s\d+e\d+|\d+x\d+|v\d+|s\d+-\d+)$") {
+                    if re.is_match(w) { return Some(false); }
+                }
+                return Some(true);
+            }
+        }
+        None
+    };
+
+    if let Some(true) = check_spinoff(show_name) { return true; }
+    if let Some(r_name) = romaji_name {
+        if let Some(true) = check_spinoff(r_name) { return true; }
+    }
+
+    // Year check: if the torrent has a 19xx/20xx year, it must match the target year.
+    if let Some(t_year_str) = target_year {
+        let clean_t = t_year_str.chars().take_while(|c| c.is_ascii_digit()).collect::<String>();
+        if let Ok(t_y) = clean_t.parse::<i32>() {
+            let mut found_any_year = false;
+            let mut year_matches = false;
+            if let Ok(re_year) = Regex::new(r"\b(19\d{2}|20\d{2})\b") {
+                for cap in re_year.captures_iter(&t_clean) {
+                    if let Ok(y) = cap[1].parse::<i32>() {
+                        if y == 1920 { continue; } // ignore 1920x1080 resolution artifact
+                        found_any_year = true;
+                        if (t_y - y).abs() <= 1 {
+                            year_matches = true;
+                        }
+                    }
+                }
+            }
+            if found_any_year && !year_matches {
+                return true; 
+            }
+        }
+    }
+
+    false
+}
+
 fn verify_torrent_match(
     title: &str,
     show_name: &str,
+    romaji_name: Option<&str>,
+    target_year: Option<&str>,
     target_season: u32,
     target_episode: u32,
 ) -> bool {
+    if is_torrent_mismatch(title, show_name, romaji_name, target_year) {
+        return false;
+    }
+
     if is_special_or_ova_mismatch(title, show_name, target_season) {
         return false;
     }
@@ -1208,6 +1354,9 @@ pub async fn get_movie_streams(
     });
 
     let mut all_streams: Vec<Stream> = Vec::new();
+    let mut resolved_show_name: Option<String> = None;
+    let mut resolved_romaji_name: Option<String> = None;
+    let mut resolved_year: Option<String> = None;
     let mut meta_resolved = false;
     let timeout_dur = std::time::Duration::from_millis(3500);
 
@@ -1223,6 +1372,12 @@ pub async fn get_movie_streams(
                 match task_res {
                     ScraperTaskResult::Streams(streams) => {
                         for s in streams {
+                            if let Some(show_name) = &resolved_show_name {
+                                let torrent_title = extract_torrent_title(&s.title);
+                                if is_torrent_mismatch(&torrent_title, show_name, resolved_romaji_name.as_deref(), resolved_year.as_deref()) {
+                                    continue;
+                                }
+                            }
                             if !all_streams.iter().any(|x| x.info_hash == s.info_hash) {
                                 all_streams.push(s);
                             }
@@ -1232,7 +1387,13 @@ pub async fn get_movie_streams(
                         if !meta_resolved {
                             meta_resolved = true;
                             if let Some((name, year)) = meta_res {
+                                resolved_show_name = Some(name.clone());
+                                resolved_year = year.clone();
                                 let cleaned = clean_title(&name);
+                                
+                                let (is_anime, romaji_opt) = check_if_anime_and_get_romaji(&client, &name, year.as_deref()).await;
+                                resolved_romaji_name = romaji_opt.clone();
+                                let cleaned_romaji = romaji_opt.map(|t| clean_title(&t));
                                 let query = if let Some(yr) = &year {
                                     format!("{} {}", cleaned, yr)
                                 } else {
@@ -1258,31 +1419,31 @@ pub async fn get_movie_streams(
                                     ScraperTaskResult::Streams(scrape_apibay(&client_c3, &query_apibay, "APIBay").await)
                                 });
 
-                                // Spawn Nyaa Anime search (first resolves Kitsu concurrently)
+                                // Spawn Nyaa Anime search
                                 let client_c4 = client.clone();
-                                let name_clone = name.clone();
                                 let query_nyaa = query.clone();
                                 let year_clone = year.clone();
                                 set.spawn(async move {
-                                    let kitsu_title = fetch_kitsu_romaji_title(&client_c4, &name_clone).await;
-                                    let cleaned_romaji = kitsu_title.map(|t| clean_title(&t));
-                                    let fut1 = scrape_nyaa(&client_c4, &query_nyaa);
-                                    let fut2 = async {
-                                        if let Some(q) = &cleaned_romaji {
-                                            let mut q_with_yr = q.clone();
-                                            if let Some(yr) = &year_clone {
-                                                q_with_yr = format!("{} {}", q, yr);
+                                    let mut combined = Vec::new();
+                                    if is_anime {
+                                        let fut1 = scrape_nyaa(&client_c4, &query_nyaa);
+                                        let fut2 = async {
+                                            if let Some(q) = &cleaned_romaji {
+                                                let mut q_with_yr = q.clone();
+                                                if let Some(yr) = &year_clone {
+                                                    q_with_yr = format!("{} {}", q, yr);
+                                                }
+                                                scrape_nyaa(&client_c4, &q_with_yr).await
+                                            } else {
+                                                Vec::new()
                                             }
-                                            scrape_nyaa(&client_c4, &q_with_yr).await
-                                        } else {
-                                            Vec::new()
-                                        }
-                                    };
-                                    let (res1, res2) = tokio::join!(fut1, fut2);
-                                    let mut combined = res1;
-                                    for stream in res2 {
-                                        if !combined.iter().any(|s| s.info_hash == stream.info_hash) {
-                                            combined.push(stream);
+                                        };
+                                        let (res1, res2) = tokio::join!(fut1, fut2);
+                                        combined = res1;
+                                        for stream in res2 {
+                                            if !combined.iter().any(|s| s.info_hash == stream.info_hash) {
+                                                combined.push(stream);
+                                            }
                                         }
                                     }
                                     ScraperTaskResult::Streams(combined)
@@ -1363,6 +1524,8 @@ pub async fn get_series_streams(
 
     let mut all_streams: Vec<Stream> = Vec::new();
     let mut resolved_show_name: Option<String> = None;
+    let mut resolved_romaji_name: Option<String> = None;
+    let mut resolved_year: Option<String> = None;
     let mut meta_resolved = false;
     let timeout_dur = std::time::Duration::from_millis(3500);
 
@@ -1380,7 +1543,7 @@ pub async fn get_series_streams(
                         for s in streams {
                             if let Some(show_name) = &resolved_show_name {
                                 let torrent_title = extract_torrent_title(&s.title);
-                                if !verify_torrent_match(&torrent_title, show_name, season, episode) {
+                                if !verify_torrent_match(&torrent_title, show_name, resolved_romaji_name.as_deref(), resolved_year.as_deref(), season, episode) {
                                     continue;
                                 }
                             }
@@ -1392,9 +1555,14 @@ pub async fn get_series_streams(
                     ScraperTaskResult::Meta(meta_res) => {
                         if !meta_resolved {
                             meta_resolved = true;
-                            if let Some((name, _year)) = meta_res {
+                            if let Some((name, year)) = meta_res {
                                 resolved_show_name = Some(name.clone());
+                                resolved_year = year.clone();
                                 let cleaned = clean_title(&name);
+                                
+                                let (is_anime, romaji_opt) = check_if_anime_and_get_romaji(&client, &name, year.as_deref()).await;
+                                resolved_romaji_name = romaji_opt.clone();
+                                let cleaned_romaji = romaji_opt.map(|t| clean_title(&t));
 
                                 // Format 1: "Show Name S01E01"
                                 let query1 = format!("{} S{:02}E{:02}", cleaned, season, episode);
@@ -1442,46 +1610,45 @@ pub async fn get_series_streams(
 
                                 // Spawn Nyaa (Anime) search
                                 let client_c2 = client.clone();
-                                let name_clone = name.clone();
                                 let q1_nyaa = query1.clone();
                                 set.spawn(async move {
-                                    let kitsu_title = fetch_kitsu_romaji_title(&client_c2, &name_clone).await;
-                                    let cleaned_romaji = kitsu_title.map(|t| clean_title(&t));
-
                                     let q2_nyaa = format!("{} {:02}", cleaned, episode);
                                     
-                                    let fut1 = scrape_nyaa(&client_c2, &q1_nyaa);
-                                    let fut2 = scrape_nyaa(&client_c2, &q2_nyaa);
-                                    let fut3 = async {
-                                        if let Some(romaji) = &cleaned_romaji {
-                                            scrape_nyaa(&client_c2, &format!("{} {:02}", romaji, episode)).await
-                                        } else {
-                                            Vec::new()
-                                        }
-                                    };
-                                    let fut4 = async {
-                                        if let Some(romaji) = &cleaned_romaji {
-                                            scrape_nyaa(&client_c2, &format!("{} S{:02}E{:02}", romaji, season, episode)).await
-                                        } else {
-                                            Vec::new()
-                                        }
-                                    };
+                                    let mut combined = Vec::new();
+                                    if is_anime {
+                                        let fut1 = scrape_nyaa(&client_c2, &q1_nyaa);
+                                        let fut2 = scrape_nyaa(&client_c2, &q2_nyaa);
+                                        let fut3 = async {
+                                            if let Some(romaji) = &cleaned_romaji {
+                                                scrape_nyaa(&client_c2, &format!("{} {:02}", romaji, episode)).await
+                                            } else {
+                                                Vec::new()
+                                            }
+                                        };
+                                        let fut4 = async {
+                                            if let Some(romaji) = &cleaned_romaji {
+                                                scrape_nyaa(&client_c2, &format!("{} S{:02}E{:02}", romaji, season, episode)).await
+                                            } else {
+                                                Vec::new()
+                                            }
+                                        };
 
-                                    let (r1, r2, r3, r4) = tokio::join!(fut1, fut2, fut3, fut4);
-                                    let mut combined = r1;
-                                    for s in r2 {
-                                        if !combined.iter().any(|x| x.info_hash == s.info_hash) {
-                                            combined.push(s);
+                                        let (r1, r2, r3, r4) = tokio::join!(fut1, fut2, fut3, fut4);
+                                        combined = r1;
+                                        for s in r2 {
+                                            if !combined.iter().any(|x| x.info_hash == s.info_hash) {
+                                                combined.push(s);
+                                            }
                                         }
-                                    }
-                                    for s in r3 {
-                                        if !combined.iter().any(|x| x.info_hash == s.info_hash) {
-                                            combined.push(s);
+                                        for s in r3 {
+                                            if !combined.iter().any(|x| x.info_hash == s.info_hash) {
+                                                combined.push(s);
+                                            }
                                         }
-                                    }
-                                    for s in r4 {
-                                        if !combined.iter().any(|x| x.info_hash == s.info_hash) {
-                                            combined.push(s);
+                                        for s in r4 {
+                                            if !combined.iter().any(|x| x.info_hash == s.info_hash) {
+                                                combined.push(s);
+                                            }
                                         }
                                     }
                                     ScraperTaskResult::Streams(combined)

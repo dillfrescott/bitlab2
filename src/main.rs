@@ -184,300 +184,85 @@ async fn landing_handler(headers: HeaderMap) -> impl IntoResponse {
         format!("{}://{}/manifest.json", proto, host)
     };
 
-    let stremio_url = manifest_url
-        .replace("https://", "stremio://")
-        .replace("http://", "stremio://");
-
     let html_content = format!(
         r#"<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bitlab - Stremio Addon</title>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <title>Bitlab</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
     <style>
-        :root {{
-            --bg-color: #030303;
-            --card-bg: rgba(15, 15, 15, 0.6);
-            --text-color: #f5f5f7;
-            --text-muted: #86868b;
-            --accent: #00ff66;
-            --accent-glow: rgba(0, 255, 102, 0.15);
-            --border-color: rgba(255, 255, 255, 0.08);
-            --purple-glow: rgba(147, 51, 234, 0.1);
-        }}
-
-        * {{
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }}
-
         body {{
             font-family: 'Outfit', sans-serif;
-            background-color: var(--bg-color);
-            background-image: 
-                radial-gradient(circle at 10% 20%, var(--purple-glow) 0%, transparent 40%),
-                radial-gradient(circle at 90% 80%, rgba(0, 255, 102, 0.05) 0%, transparent 40%);
-            color: var(--text-color);
+            background-color: #000000;
+            color: #ffffff;
             min-height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
             padding: 24px;
+            margin: 0;
         }}
-
         .container {{
-            max-width: 520px;
+            max-width: 480px;
             width: 100%;
             display: flex;
             flex-direction: column;
-            gap: 24px;
+            gap: 4px;
         }}
-
-        .card {{
-            background: var(--card-bg);
-            backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
-            border: 1px solid var(--border-color);
-            border-radius: 20px;
-            padding: 32px;
-            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
-            display: flex;
-            flex-direction: column;
-            gap: 20px;
-            position: relative;
-            overflow: hidden;
-        }}
-
-        .card::before {{
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            height: 2px;
-            background: linear-gradient(90deg, transparent, var(--accent), transparent);
-        }}
-
-        .header {{
-            text-align: center;
-            margin-bottom: 8px;
-        }}
-
         h1 {{
-            font-size: 2.8rem;
+            font-size: 2.2rem;
             font-weight: 800;
-            letter-spacing: -0.04em;
-            text-transform: uppercase;
-            background: linear-gradient(135deg, #ffffff 0%, #a1a1aa 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            margin-bottom: 6px;
+            letter-spacing: -0.03em;
+            margin: 0;
         }}
-
-        .subtitle {{
-            font-size: 0.9rem;
-            color: var(--accent);
-            letter-spacing: 0.15em;
-            text-transform: uppercase;
-            font-weight: 600;
-        }}
-
-        .desc {{
-            font-size: 0.95rem;
-            color: var(--text-muted);
-            line-height: 1.6;
-            text-align: center;
-        }}
-
-        .divider {{
-            height: 1px;
-            background: var(--border-color);
-            width: 100%;
-        }}
-
-        .install-section {{
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }}
-
-        .btn-install {{
-            background: var(--accent);
-            color: #000000;
-            border: none;
-            padding: 16px 28px;
-            border-radius: 12px;
-            font-size: 1rem;
-            font-weight: 700;
-            cursor: pointer;
-            text-decoration: none;
-            text-align: center;
-            transition: all 0.3s ease;
-            box-shadow: 0 4px 14px 0 var(--accent-glow);
-            display: inline-block;
-        }}
-
-        .btn-install:hover {{
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px 0 var(--accent-glow);
-            filter: brightness(1.1);
-        }}
-
-        .btn-install:active {{
-            transform: translateY(0);
-        }}
-
         .url-box {{
-            background: rgba(0, 0, 0, 0.4);
-            border: 1px solid var(--border-color);
+            background: #090909;
+            border: 1px solid #1a1a1a;
             border-radius: 12px;
-            padding: 6px 6px 6px 16px;
+            padding: 8px 8px 8px 16px;
             display: flex;
             align-items: center;
             justify-content: space-between;
             gap: 12px;
-            transition: border-color 0.3s ease;
         }}
-
-        .url-box:hover {{
-            border-color: rgba(255, 255, 255, 0.15);
-        }}
-
         .url-text {{
             font-family: monospace;
             font-size: 0.85rem;
-            color: var(--text-color);
+            color: #a1a1aa;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
             user-select: all;
-            opacity: 0.8;
         }}
-
         .btn-copy {{
-            background: rgba(255, 255, 255, 0.08);
-            color: var(--text-color);
-            border: 1px solid var(--border-color);
+            background: #ffffff;
+            color: #000000;
+            border: none;
             padding: 10px 18px;
             border-radius: 8px;
-            font-size: 0.8rem;
+            font-size: 0.85rem;
             font-weight: 600;
             cursor: pointer;
             transition: all 0.2s ease;
             white-space: nowrap;
         }}
-
         .btn-copy:hover {{
-            background: rgba(255, 255, 255, 0.12);
-            border-color: rgba(255, 255, 255, 0.2);
+            opacity: 0.9;
         }}
-
         .copied {{
-            background: var(--accent) !important;
+            background: #00ff66 !important;
             color: #000000 !important;
-            border-color: var(--accent) !important;
-        }}
-
-        .features {{
-            display: flex;
-            flex-direction: column;
-            gap: 14px;
-        }}
-
-        .feature-title {{
-            font-size: 0.85rem;
-            color: var(--text-muted);
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            font-weight: 600;
-            margin-bottom: 2px;
-        }}
-
-        .badge-list {{
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-        }}
-
-        .badge {{
-            background: rgba(255, 255, 255, 0.04);
-            border: 1px solid var(--border-color);
-            color: var(--text-color);
-            font-size: 0.8rem;
-            padding: 6px 12px;
-            border-radius: 20px;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            font-weight: 500;
-            transition: all 0.2s ease;
-        }}
-
-        .badge:hover {{
-            background: rgba(255, 255, 255, 0.08);
-            border-color: rgba(255, 255, 255, 0.15);
-        }}
-
-        .badge .dot {{
-            width: 6px;
-            height: 6px;
-            background: var(--accent);
-            border-radius: 50%;
-            box-shadow: 0 0 8px var(--accent);
-        }}
-
-        .footer {{
-            text-align: center;
-            font-size: 0.75rem;
-            color: var(--text-muted);
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
         }}
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="card">
-            <div class="header">
-                <h1>Bitlab</h1>
-                <div class="subtitle">Stremio Addon</div>
-            </div>
-            
-            <p class="desc">A high-performance Stremio scraper addon. Resolves high-speed streaming links from popular trackers instantly with background caching.</p>
-            
-            <div class="divider"></div>
-            
-            <div class="install-section">
-                <a href="{stremio_url}" class="btn-install">Install Addon</a>
-            </div>
-            
-            <div class="url-box">
-                <span class="url-text" id="manifest-url">{manifest_url}</span>
-                <button class="btn-copy" onclick="copyManifestUrl()" id="copy-btn">Copy URL</button>
-            </div>
-
-            <div class="divider"></div>
-
-            <div class="features">
-                <div class="feature-title">Active Scraping Backends</div>
-                <div class="badge-list">
-                    <div class="badge"><span class="dot"></span>YTS Movies</div>
-                    <div class="badge"><span class="dot"></span>APIBay TPB</div>
-                    <div class="badge"><span class="dot"></span>ThePirateBay</div>
-                    <div class="badge"><span class="dot"></span>Nyaa Anime</div>
-                    <div class="badge"><span class="dot"></span>EZTV Shows</div>
-                    <div class="badge"><span class="dot"></span>Cinemeta API</div>
-                </div>
-            </div>
-        </div>
-        
-        <div class="footer">
-            <p>Bitlab Addon v1.0.0 &bull; Running in high-performance mode</p>
-            <p>Powered by Rust, Tokio, and Axum</p>
+        <h1>Bitlab</h1>
+        <div class="url-box">
+            <span class="url-text" id="manifest-url">{manifest_url}</span>
+            <button class="btn-copy" onclick="copyManifestUrl()" id="copy-btn">Copy URL</button>
         </div>
     </div>
 
@@ -486,7 +271,7 @@ async fn landing_handler(headers: HeaderMap) -> impl IntoResponse {
             const urlText = document.getElementById('manifest-url').innerText;
             navigator.clipboard.writeText(urlText).then(() => {{
                 const copyBtn = document.getElementById('copy-btn');
-                copyBtn.innerText = 'Copied!';
+                copyBtn.innerText = 'Copied';
                 copyBtn.classList.add('copied');
                 setTimeout(() => {{
                     copyBtn.innerText = 'Copy URL';

@@ -37,15 +37,72 @@ struct YtsTorrent {
     size: String,
 }
 
+fn base32_to_hex(b32: &str) -> Option<String> {
+    let mut bits = 0u64;
+    let mut bit_count = 0;
+    let mut bytes = Vec::new();
+    
+    for c in b32.chars() {
+        if c == '=' {
+            continue;
+        }
+        let val = match c.to_ascii_uppercase() {
+            'A'..='Z' => c.to_ascii_uppercase() as u8 - b'A',
+            '2'..='7' => c.to_ascii_uppercase() as u8 - b'2' + 26,
+            _ => return None,
+        };
+        bits = (bits << 5) | (val as u64);
+        bit_count += 5;
+        if bit_count >= 8 {
+            bytes.push((bits >> (bit_count - 8)) as u8);
+            bit_count -= 8;
+        }
+    }
+    
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        hex.push_str(&format!("{:02x}", b));
+    }
+    Some(hex)
+}
+
+fn normalize_info_hash(hash: &str) -> String {
+    let cleaned = hash.trim();
+    let hash_nopad = cleaned.replace('=', "");
+    if hash_nopad.len() == 32 {
+        if let Some(hex) = base32_to_hex(&hash_nopad) {
+            return hex.to_lowercase();
+        }
+    }
+    cleaned.to_lowercase()
+}
+
+fn build_magnet_url(info_hash: &str, display_name: &str) -> String {
+    let normalized = normalize_info_hash(info_hash);
+    let mut url = format!(
+        "magnet:?xt=urn:btih:{}&dn={}",
+        normalized,
+        urlencoding::encode(display_name)
+    );
+    for tracker in PUBLIC_TRACKERS {
+        url.push_str("&tr=");
+        url.push_str(urlencoding::encode(tracker).as_ref());
+    }
+    url
+}
+
 fn extract_hash_from_magnet(magnet: &str) -> Option<String> {
     let prefix = "magnet:?xt=urn:btih:";
-    if let Some(idx) = magnet.find(prefix) {
+    let magnet_lower = magnet.to_lowercase();
+    if let Some(idx) = magnet_lower.find(prefix) {
         let hash_start = idx + prefix.len();
         let sub = &magnet[hash_start..];
-        if let Some(end_idx) = sub.find('&') {
-            return Some(sub[..end_idx].to_string());
-        }
-        return Some(sub.to_string());
+        let hash_part = if let Some(end_idx) = sub.find('&') {
+            &sub[..end_idx]
+        } else {
+            sub
+        };
+        return Some(normalize_info_hash(hash_part));
     }
     None
 }
@@ -115,10 +172,8 @@ const PUBLIC_TRACKERS: &[&str] = &[
     "udp://tracker.bittor.co:80/announce",
 ];
 
-fn get_sources_for_torrent(info_hash: &str, name: &str) -> Vec<String> {
+fn get_sources_for_torrent(_info_hash: &str, _name: &str) -> Vec<String> {
     let mut sources = Vec::new();
-    let magnet = build_magnet_url(info_hash, name);
-    sources.push(magnet);
     for tracker in PUBLIC_TRACKERS {
         sources.push(format!("tracker:{}", tracker));
     }
@@ -127,7 +182,6 @@ fn get_sources_for_torrent(info_hash: &str, name: &str) -> Vec<String> {
 
 fn extract_trackers_from_magnet(magnet: &str) -> Vec<String> {
     let mut sources = Vec::new();
-    sources.push(magnet.to_string());
     for t in PUBLIC_TRACKERS {
         sources.push(format!("tracker:{}", t));
     }
@@ -149,18 +203,6 @@ fn extract_trackers_from_magnet(magnet: &str) -> Vec<String> {
     sources
 }
 
-fn build_magnet_url(info_hash: &str, display_name: &str) -> String {
-    let mut url = format!(
-        "magnet:?xt=urn:btih:{}&dn={}",
-        info_hash,
-        urlencoding::encode(display_name)
-    );
-    for tracker in PUBLIC_TRACKERS {
-        url.push_str("&tr=");
-        url.push_str(urlencoding::encode(tracker).as_ref());
-    }
-    url
-}
 
 fn clean_title(title: &str) -> String {
     title
@@ -211,8 +253,8 @@ async fn scrape_single_yts(client: reqwest::Client, url: String) -> Vec<Stream> 
                                     format!("👥 {} seeders | 📥 {} peers", torrent.seeds, torrent.peers)
                                 };
                                 
-                                let magnet = build_magnet_url(&torrent.hash, &movie.title);
                                 let sources = get_sources_for_torrent(&torrent.hash, &movie.title);
+                                let magnet = build_magnet_url(&torrent.hash, &movie.title);
                                 streams.push(Stream {
                                     name: format!("[Bitlab] {}", quality),
                                     title: format!(
@@ -222,7 +264,7 @@ async fn scrape_single_yts(client: reqwest::Client, url: String) -> Vec<Stream> 
                                         peers_info
                                     ),
                                     url: Some(magnet),
-                                    info_hash: Some(torrent.hash.clone().to_lowercase()),
+                                    info_hash: Some(normalize_info_hash(&torrent.hash)),
                                     file_idx: None,
                                     sources: Some(sources),
                                     behavior_hints: None,
@@ -340,6 +382,7 @@ async fn scrape_single_tpb(
         let leechers_display = format!("{} peers", leechers);
         
         let sources = extract_trackers_from_magnet(magnet);
+        let normalized_magnet = build_magnet_url(&info_hash, &name);
         streams.push(Stream {
             name: format!("[Bitlab] {}", quality),
             title: format!(
@@ -350,7 +393,7 @@ async fn scrape_single_tpb(
                 seeds_display,
                 leechers_display
             ),
-            url: Some(magnet.to_string()),
+            url: Some(normalized_magnet),
             info_hash: Some(info_hash),
             file_idx: None,
             sources: Some(sources),
@@ -460,8 +503,8 @@ pub async fn scrape_apibay(
         let seeds_display = format!("{} seeders", seeds);
         let leechers_display = format!("{} peers", peers);
         
-        let magnet = build_magnet_url(&hash, &name);
         let sources = get_sources_for_torrent(&hash, &name);
+        let magnet = build_magnet_url(&hash, &name);
         streams.push(Stream {
             name: format!("[Bitlab] {}", quality),
             title: format!(
@@ -473,7 +516,7 @@ pub async fn scrape_apibay(
                 leechers_display
             ),
             url: Some(magnet),
-            info_hash: Some(hash),
+            info_hash: Some(normalize_info_hash(&hash)),
             file_idx: None,
             sources: Some(sources),
             behavior_hints: None,
@@ -544,6 +587,7 @@ async fn scrape_single_solidtorrent(
                         let leechers_display = format!("{} peers", leechers);
                         
                         let sources = extract_trackers_from_magnet(&magnet);
+                        let normalized_magnet = build_magnet_url(&info_hash, &title);
                         streams.push(Stream {
                             name: format!("[Bitlab] {}", quality),
                             title: format!(
@@ -554,7 +598,7 @@ async fn scrape_single_solidtorrent(
                                 seeds_display,
                                 leechers_display
                             ),
-                            url: Some(magnet),
+                            url: Some(normalized_magnet),
                             info_hash: Some(info_hash),
                             file_idx: None,
                             sources: Some(sources),
@@ -639,8 +683,8 @@ async fn scrape_single_nyaa(client: reqwest::Client, url: String) -> Vec<Stream>
                     
                     let quality = detect_quality(&title);
                     
-                    let magnet = build_magnet_url(&hash, &title);
                     let sources = get_sources_for_torrent(&hash, &title);
+                    let magnet = build_magnet_url(&hash, &title);
                     streams.push(Stream {
                         name: format!("[Bitlab] {}", quality),
                         title: format!(
@@ -651,7 +695,7 @@ async fn scrape_single_nyaa(client: reqwest::Client, url: String) -> Vec<Stream>
                             leechers
                         ),
                         url: Some(magnet),
-                        info_hash: Some(hash.to_lowercase()),
+                        info_hash: Some(normalize_info_hash(&hash)),
                         file_idx: None,
                         sources: Some(sources),
                         behavior_hints: None,
@@ -770,8 +814,8 @@ async fn scrape_single_eztv(
                 format!("👥 {} seeders | 📥 {} peers", seeds, peers)
             };
             
-            let magnet = build_magnet_url(&hash, &title);
             let sources = get_sources_for_torrent(&hash, &title);
+            let magnet = build_magnet_url(&hash, &title);
             streams.push(Stream {
                 name: format!("[Bitlab] {}", quality),
                 title: format!(
@@ -781,7 +825,7 @@ async fn scrape_single_eztv(
                     peers_info
                 ),
                 url: Some(magnet),
-                info_hash: Some(hash.to_lowercase()),
+                info_hash: Some(normalize_info_hash(&hash)),
                 file_idx: None,
                 sources: Some(sources),
                 behavior_hints: None,
@@ -1564,6 +1608,30 @@ mod tests {
         assert_eq!(format_size("1048576"), "1.00 MiB");
         assert_eq!(format_size("500"), "500 B");
         assert_eq!(format_size("invalid"), "Unknown size");
+    }
+
+    #[test]
+    fn test_normalize_info_hash() {
+        assert_eq!(
+            normalize_info_hash("1588987DB4C7D98F74FB436AD8FEDE1CBE9F1F63"),
+            "1588987db4c7d98f74fb436ad8fede1cbe9f1f63"
+        );
+        assert_eq!(
+            normalize_info_hash("WRN7ZT6NKMA6SSXYKAFRUGDDIFJUNKI2"),
+            "b45bfccfcd5301e94af8500b1a1863415346a91a"
+        );
+        assert_eq!(
+            normalize_info_hash("WRN7ZT6NKMA6SSXYKAFRUGDDIFJUNKI2==="),
+            "b45bfccfcd5301e94af8500b1a1863415346a91a"
+        );
+        assert_eq!(
+            extract_hash_from_magnet("magnet:?xt=urn:btih:1588987db4c7d98f74fb436ad8fede1cbe9f1f63&dn=Test"),
+            Some("1588987db4c7d98f74fb436ad8fede1cbe9f1f63".to_string())
+        );
+        assert_eq!(
+            extract_hash_from_magnet("magnet:?xt=urn:btih:WRN7ZT6NKMA6SSXYKAFRUGDDIFJUNKI2&dn=Test"),
+            Some("b45bfccfcd5301e94af8500b1a1863415346a91a".to_string())
+        );
     }
 
     #[tokio::test]

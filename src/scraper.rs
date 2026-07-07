@@ -253,7 +253,7 @@ async fn scrape_single_yts(client: reqwest::Client, url: String) -> Vec<Stream> 
                                         torrent.size,
                                         peers_info
                                     ),
-                                    url: Some(magnet),
+                                    url: None,
                                     info_hash: Some(normalize_info_hash(&torrent.hash)),
                                     file_idx: None,
                                     sources: Some(sources),
@@ -383,7 +383,7 @@ async fn scrape_single_tpb(
                 seeds_display,
                 leechers_display
             ),
-            url: Some(normalized_magnet),
+            url: None,
             info_hash: Some(info_hash),
             file_idx: None,
             sources: Some(sources),
@@ -505,7 +505,7 @@ pub async fn scrape_apibay(
                 seeds_display,
                 leechers_display
             ),
-            url: Some(magnet),
+            url: None,
             info_hash: Some(normalize_info_hash(&hash)),
             file_idx: None,
             sources: Some(sources),
@@ -588,7 +588,7 @@ async fn scrape_single_solidtorrent(
                                 seeds_display,
                                 leechers_display
                             ),
-                            url: Some(normalized_magnet),
+                            url: None,
                             info_hash: Some(info_hash),
                             file_idx: None,
                             sources: Some(sources),
@@ -684,7 +684,7 @@ async fn scrape_single_nyaa(client: reqwest::Client, url: String) -> Vec<Stream>
                             seeders,
                             leechers
                         ),
-                        url: Some(magnet),
+                        url: None,
                         info_hash: Some(normalize_info_hash(&hash)),
                         file_idx: None,
                         sources: Some(sources),
@@ -814,7 +814,7 @@ async fn scrape_single_eztv(
                     size_formatted,
                     peers_info
                 ),
-                url: Some(magnet),
+                url: None,
                 info_hash: Some(normalize_info_hash(&hash)),
                 file_idx: None,
                 sources: Some(sources),

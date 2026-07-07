@@ -157,19 +157,7 @@ const PUBLIC_TRACKERS: &[&str] = &[
     "udp://tracker.opentrackr.org:1337/announce",
     "udp://open.stealth.si:80/announce",
     "udp://tracker.torrent.eu.org:451/announce",
-    "udp://tracker.moeking.me:6969/announce",
-    "udp://explodie.org:6969/announce",
-    "udp://exodus.desync.com:6969/announce",
-    "udp://tracker.cyberia.is:6969/announce",
-    "udp://open.demonii.com:1337/announce",
     "udp://tracker.tiny-vps.com:6969/announce",
-    "udp://tracker.dler.org:6969/announce",
-    "udp://tracker.openbittorrent.com:6969/announce",
-    "udp://tracker.internetwarriors.net:1337/announce",
-    "udp://tracker.dump.cl:6969/announce",
-    "udp://tracker.ipv6tracker.ru:80/announce",
-    "udp://movies.zack.si:80/announce",
-    "udp://tracker.bittor.co:80/announce",
 ];
 
 fn get_sources_for_torrent(info_hash: &str, _name: &str) -> Vec<String> {

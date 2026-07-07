@@ -10,7 +10,7 @@ primary_region = 'ord'
   dockerfile = 'Dockerfile'
 
 [env]
-  ALLOWED_URL = 'https://bitlab.dill.moe'
+  ALLOWED_URL = 'https://bit.dill.moe'
   PORT = '8080'
 
 [http_service]

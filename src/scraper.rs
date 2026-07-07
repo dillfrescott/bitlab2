@@ -1147,7 +1147,7 @@ fn parse_torrent_info(title: &str) -> TorrentInfo {
     TorrentInfo { seasons, episodes, is_pack }
 }
 
-fn is_torrent_mismatch(torrent_title: &str, show_name: &str, romaji_name: Option<&str>, target_year: Option<&str>) -> bool {
+fn is_torrent_mismatch(torrent_title: &str, show_name: &str, romaji_name: Option<&str>, target_year: Option<&str>, is_series: bool) -> bool {
     let t_clean = clean_title(&torrent_title.to_lowercase());
     
     let mut base_title = t_clean.clone();
@@ -1224,8 +1224,14 @@ fn is_torrent_mismatch(torrent_title: &str, show_name: &str, romaji_name: Option
                     if let Ok(y) = cap[1].parse::<i32>() {
                         if y == 1920 { continue; } // ignore 1920x1080 resolution artifact
                         found_any_year = true;
-                        if (t_y - y).abs() <= 1 {
-                            year_matches = true;
+                        if is_series {
+                            if y >= t_y - 1 {
+                                year_matches = true;
+                            }
+                        } else {
+                            if (t_y - y).abs() <= 1 {
+                                year_matches = true;
+                            }
                         }
                     }
                 }
@@ -1247,7 +1253,7 @@ fn verify_torrent_match(
     target_season: u32,
     target_episode: u32,
 ) -> bool {
-    if is_torrent_mismatch(title, show_name, romaji_name, target_year) {
+    if is_torrent_mismatch(title, show_name, romaji_name, target_year, true) {
         return false;
     }
 
@@ -1374,7 +1380,7 @@ pub async fn get_movie_streams(
                         for s in streams {
                             if let Some(show_name) = &resolved_show_name {
                                 let torrent_title = extract_torrent_title(&s.title);
-                                if is_torrent_mismatch(&torrent_title, show_name, resolved_romaji_name.as_deref(), resolved_year.as_deref()) {
+                                if is_torrent_mismatch(&torrent_title, show_name, resolved_romaji_name.as_deref(), resolved_year.as_deref(), false) {
                                     continue;
                                 }
                             }

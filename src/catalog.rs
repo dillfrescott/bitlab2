@@ -86,7 +86,8 @@ pub async fn get_popular_movies(
         let client_clone = client.clone();
         let meta_cache_clone = meta_cache.clone();
         futures.push(tokio::spawn(async move {
-            if let Some(meta) = fetch_meta(&client_clone, "movie", &id).await {
+            let fetch_fut = fetch_meta(&client_clone, "movie", &id);
+            if let Ok(Some(meta)) = tokio::time::timeout(std::time::Duration::from_millis(2500), fetch_fut).await {
                 // Populate the meta cache for future streaming requests
                 {
                     let mut cache = meta_cache_clone.write().await;
@@ -180,7 +181,8 @@ pub async fn get_popular_series(
         let client_clone = client.clone();
         let meta_cache_clone = meta_cache.clone();
         futures.push(tokio::spawn(async move {
-            if let Some(meta) = fetch_meta(&client_clone, "series", &id).await {
+            let fetch_fut = fetch_meta(&client_clone, "series", &id);
+            if let Ok(Some(meta)) = tokio::time::timeout(std::time::Duration::from_millis(2500), fetch_fut).await {
                 // Populate the meta cache for future streaming requests
                 {
                     let mut cache = meta_cache_clone.write().await;

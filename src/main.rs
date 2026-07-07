@@ -40,6 +40,28 @@ async fn main() {
         stream_cache: Arc::new(RwLock::new(HashMap::new())),
     };
 
+    // Spawn background cache pruner task to prevent memory leaks/indefinite growth
+    let state_clone = state.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await; // run hourly
+            
+            // 1. Prune expired stream cache entries (older than 24 hours)
+            {
+                let mut cache = state_clone.stream_cache.write().await;
+                cache.retain(|_, (_, timestamp)| timestamp.elapsed().as_secs() < 86400);
+            }
+            
+            // 2. Clear meta cache if it grows too large (keep it under 5000 items)
+            {
+                let mut cache = state_clone.meta_cache.write().await;
+                if cache.len() > 5000 {
+                    cache.clear();
+                }
+            }
+        }
+    });
+
     // Configure CORS
     let cors = CorsLayer::new()
         .allow_origin(Any)

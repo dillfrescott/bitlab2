@@ -517,6 +517,96 @@ pub async fn scrape_apibay(
 }
 
 #[derive(Deserialize, Debug)]
+struct BitsearchResponse {
+    results: Option<Vec<BitsearchTorrent>>,
+}
+
+#[derive(Deserialize, Debug)]
+struct BitsearchTorrent {
+    title: Option<String>,
+    infohash: Option<String>,
+    size: Option<u64>,
+    seeders: Option<u32>,
+    leechers: Option<u32>,
+}
+
+/// Scrapes Bitsearch for torrents using its JSON API
+pub async fn scrape_bitsearch(
+    client: &reqwest::Client,
+    query: &str,
+    provider_label: &str,
+) -> Vec<Stream> {
+    let mut streams = Vec::new();
+    let encoded_query = urlencoding::encode(query);
+    let url = format!("https://bitsearch.to/api/v1/search?q={}&limit=50&sort=seeders", encoded_query);
+    
+    let req = client.get(&url)
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .timeout(std::time::Duration::from_millis(2500));
+        
+    let resp = match req.send().await {
+        Ok(r) => r,
+        Err(_) => return streams,
+    };
+    
+    if !resp.status().is_success() {
+        return streams;
+    }
+
+    let json_resp: BitsearchResponse = match resp.json().await {
+        Ok(j) => j,
+        Err(_) => return streams,
+    };
+    
+    if let Some(results) = json_resp.results {
+        for t in results {
+            let title = t.title.unwrap_or_default();
+            let infohash = t.infohash.unwrap_or_default();
+            
+            if title.is_empty() || infohash.is_empty() {
+                continue;
+            }
+            
+            let hash = infohash.to_lowercase();
+            let quality = detect_quality(&title);
+            
+            let size_bytes = t.size.unwrap_or(0);
+            let size_formatted = format_size(&size_bytes.to_string());
+            
+            let seeds = t.seeders.unwrap_or(0);
+            if seeds == 0 {
+                continue;
+            }
+            
+            let peers = t.leechers.unwrap_or(0);
+            
+            let seeds_display = format!("{} seeders", seeds);
+            let leechers_display = format!("{} peers", peers);
+            
+            let sources = get_sources_for_torrent(&hash, &title);
+            streams.push(Stream {
+                name: format!("[Bitlab] {}", quality),
+                title: format!(
+                    "🎬 {}: {}\n📦 {}\n👥 {} | 📥 {}\n⚡ Magnet (P2P Stream)",
+                    provider_label,
+                    title,
+                    size_formatted,
+                    seeds_display,
+                    leechers_display
+                ),
+                url: None,
+                info_hash: Some(normalize_info_hash(&hash)),
+                file_idx: None,
+                sources: Some(sources),
+                behavior_hints: None,
+            });
+        }
+    }
+    
+    streams
+}
+
+#[derive(Deserialize, Debug)]
 struct SolidTorrentsResponse {
     results: Option<Vec<SolidTorrent>>,
 }
@@ -1091,6 +1181,20 @@ fn parse_torrent_info(title: &str) -> TorrentInfo {
         }
     }
 
+    // Pattern 2d: Sxx-Sxx or Season x-y
+    if let Ok(s_range_re) = Regex::new(r"\bs(?:easons?)?\s*(\d+)\s*(?:\-|\~|to)\s*(?:s(?:easons?)?\s*)?(\d+)\b") {
+        for cap in s_range_re.captures_iter(&cleaned_title) {
+            if let (Ok(s1), Ok(s2)) = (cap[1].parse::<u32>(), cap[2].parse::<u32>()) {
+                if s1 < 100 && s2 < 100 && s1 < s2 {
+                    is_pack = true;
+                    for s in s1..=s2 {
+                        if !seasons.contains(&s) { seasons.push(s); }
+                    }
+                }
+            }
+        }
+    }
+
     // Pattern 3: xx x xx (e.g. 1x02, 01x02, 1x02-04)
     if let Ok(x_re) = Regex::new(r"\b(\d+)\s*x\s*(\d+)(?:\s*\-\s*(\d+))?\b") {
         for cap in x_re.captures_iter(&cleaned_title) {
@@ -1297,6 +1401,7 @@ fn extract_torrent_title(stream_title: &str) -> String {
         "🎬 TPB: ",
         "🎬 APIBay: ",
         "🎬 SolidTorrents: ",
+        "🎬 Bitsearch: ",
         "📺 EZTV: ",
         "🎬 YTS: "
     ];
@@ -1423,6 +1528,12 @@ pub async fn get_movie_streams(
                                 let query_apibay = query.clone();
                                 set.spawn(async move {
                                     ScraperTaskResult::Streams(scrape_apibay(&client_c3, &query_apibay, "APIBay").await)
+                                });
+
+                                let client_c_bit = client.clone();
+                                let query_bit = query.clone();
+                                set.spawn(async move {
+                                    ScraperTaskResult::Streams(scrape_bitsearch(&client_c_bit, &query_bit, "Bitsearch").await)
                                 });
 
                                 // Spawn Nyaa Anime search
@@ -1574,45 +1685,45 @@ pub async fn get_series_streams(
                                 let query1 = format!("{} S{:02}E{:02}", cleaned, season, episode);
                                 // Format 2: "Show Name 1x01"
                                 let query2 = format!("{} {}x{:02}", cleaned, season, episode);
+                                // Format 3: "Show Name Season 1"
+                                let query3 = format!("{} Season {}", cleaned, season);
+                                // Format 4: "Show Name S01"
+                                let query4 = format!("{} S{:02}", cleaned, season);
+                                // Format 5: Base name (for Complete Series packs)
+                                let query5 = cleaned.clone();
+                                // Format 6: Base name + "Complete"
+                                let query6 = format!("{} Complete", cleaned);
 
-                                // Spawn SolidTorrents, APIBay, TPB searches immediately
-                                let client_c = client.clone();
+                                let queries_to_run = vec![
+                                    query1.clone(), query2.clone(), query3.clone(), 
+                                    query4.clone(), query5.clone(), query6.clone()
+                                ];
                                 
-                                let c_solid1 = client_c.clone();
-                                let q1_solid = query1.clone();
-                                set.spawn(async move {
-                                    ScraperTaskResult::Streams(scrape_solidtorrents(&c_solid1, &q1_solid, "SolidTorrents").await)
-                                });
+                                for q in queries_to_run {
+                                    let c_solid = client.clone();
+                                    let q_solid = q.clone();
+                                    set.spawn(async move {
+                                        ScraperTaskResult::Streams(scrape_solidtorrents(&c_solid, &q_solid, "SolidTorrents").await)
+                                    });
 
-                                let c_solid2 = client_c.clone();
-                                let q2_solid = query2.clone();
-                                set.spawn(async move {
-                                    ScraperTaskResult::Streams(scrape_solidtorrents(&c_solid2, &q2_solid, "SolidTorrents").await)
-                                });
+                                    let c_api = client.clone();
+                                    let q_api = q.clone();
+                                    set.spawn(async move {
+                                        ScraperTaskResult::Streams(scrape_apibay(&c_api, &q_api, "APIBay").await)
+                                    });
 
-                                let c_api1 = client_c.clone();
-                                let q1_api = query1.clone();
-                                set.spawn(async move {
-                                    ScraperTaskResult::Streams(scrape_apibay(&c_api1, &q1_api, "APIBay").await)
-                                });
+                                    let c_tpb = client.clone();
+                                    let q_tpb = q.clone();
+                                    set.spawn(async move {
+                                        ScraperTaskResult::Streams(scrape_tpb_html(&c_tpb, &q_tpb, "TPB").await)
+                                    });
 
-                                let c_api2 = client_c.clone();
-                                let q2_api = query2.clone();
-                                set.spawn(async move {
-                                    ScraperTaskResult::Streams(scrape_apibay(&c_api2, &q2_api, "APIBay").await)
-                                });
-
-                                let c_tpb1 = client_c.clone();
-                                let q1_tpb = query1.clone();
-                                set.spawn(async move {
-                                    ScraperTaskResult::Streams(scrape_tpb_html(&c_tpb1, &q1_tpb, "TPB").await)
-                                });
-
-                                let c_tpb2 = client_c.clone();
-                                let q2_tpb = query2.clone();
-                                set.spawn(async move {
-                                    ScraperTaskResult::Streams(scrape_tpb_html(&c_tpb2, &q2_tpb, "TPB").await)
-                                });
+                                    let c_bit = client.clone();
+                                    let q_bit = q.clone();
+                                    set.spawn(async move {
+                                        ScraperTaskResult::Streams(scrape_bitsearch(&c_bit, &q_bit, "Bitsearch").await)
+                                    });
+                                }
 
                                 // Spawn Nyaa (Anime) search
                                 let client_c2 = client.clone();

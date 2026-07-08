@@ -34,9 +34,5 @@ RUN apt-get update && apt-get install -y \
 # Copy the compiled binary from the builder stage
 COPY --from=builder /usr/src/app/target/release/bitlab /app/bitlab
 
-# Set default port to 8080 (standard for Fly.io/Cloud Run)
-ENV PORT=8080
-EXPOSE 8080
-
 # Run the binary
 CMD ["./bitlab"]

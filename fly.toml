@@ -9,10 +9,6 @@ primary_region = 'ord'
 [build]
   dockerfile = 'Dockerfile'
 
-[env]
-  ALLOWED_URL = 'https://bit.dill.moe'
-  PORT = '8080'
-
 [http_service]
   internal_port = 8080
   force_https = true

@@ -2101,6 +2101,13 @@ fn parse_episode_from_filename(filename: &str) -> Option<(Option<u32>, u32)> {
         cleaned = re.replace_all(&cleaned, " ").to_string();
     }
 
+    if let Ok(re) = Regex::new(r"\bseason\s*(\d+)\s*(?:episode|ep|e|-)?\s*(\d+)\b") {
+        if let Some(cap) = re.captures(&cleaned) {
+            let s = cap[1].parse::<u32>().ok();
+            let e = cap[2].parse::<u32>().ok()?;
+            return Some((s, e));
+        }
+    }
     if let Ok(re) = Regex::new(r"s(\d+)\s*[e\.\-]\s*(\d+)") {
         if let Some(cap) = re.captures(&cleaned) {
             let s = cap[1].parse::<u32>().ok();
@@ -2458,6 +2465,9 @@ mod tests {
         assert_eq!(parse_episode_from_filename("[SubsPlease] Bocchi the Rock! - 12 (1080p).mkv"), Some((None, 12)));
         assert_eq!(parse_episode_from_filename("Bocchi the Rock! - Ep 05.mkv"), Some((None, 5)));
         assert_eq!(parse_episode_from_filename("2x03.mkv"), Some((Some(2), 3)));
+        assert_eq!(parse_episode_from_filename("Clarksons Farm Season 1 Episode 2.mkv"), Some((Some(1), 2)));
+        assert_eq!(parse_episode_from_filename("Clarksons Farm Season 4 Episode 05.mkv"), Some((Some(4), 5)));
+        assert_eq!(parse_episode_from_filename("Season 1 - 02.mkv"), Some((Some(1), 2)));
     }
 
     #[test]

@@ -24,6 +24,7 @@ struct AppState {
     client: reqwest::Client,
     meta_cache: Arc<RwLock<HashMap<String, (String, Option<String>)>>>,
     stream_cache: Arc<RwLock<HashMap<String, (Vec<Stream>, std::time::Instant)>>>,
+    torrent_files_cache: Arc<RwLock<HashMap<String, Vec<scraper::TorrentFile>>>>,
 }
 
 #[tokio::main]
@@ -38,6 +39,7 @@ async fn main() {
             .unwrap(),
         meta_cache: Arc::new(RwLock::new(HashMap::new())),
         stream_cache: Arc::new(RwLock::new(HashMap::new())),
+        torrent_files_cache: Arc::new(RwLock::new(HashMap::new())),
     };
 
     // Spawn background cache pruner task to prevent memory leaks/indefinite growth
@@ -55,6 +57,14 @@ async fn main() {
             // 2. Clear meta cache if it grows too large (keep it under 5000 items)
             {
                 let mut cache = state_clone.meta_cache.write().await;
+                if cache.len() > 5000 {
+                    cache.clear();
+                }
+            }
+
+            // 3. Clear torrent files cache if it grows too large (keep it under 5000 items)
+            {
+                let mut cache = state_clone.torrent_files_cache.write().await;
                 if cache.len() > 5000 {
                     cache.clear();
                 }
@@ -157,7 +167,7 @@ async fn stream_handler(
                 let imdb_id = parts[0];
                 let season = parts[1].parse::<u32>().unwrap_or(1);
                 let episode = parts[2].parse::<u32>().unwrap_or(1);
-                scraper::get_series_streams(&state.client, &state.meta_cache, &state.stream_cache, imdb_id, season, episode).await
+                scraper::get_series_streams(&state.client, &state.meta_cache, &state.stream_cache, &state.torrent_files_cache, imdb_id, season, episode).await
             } else {
                 Vec::new()
             }

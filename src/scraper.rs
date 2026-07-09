@@ -1009,27 +1009,28 @@ async fn check_if_anime_and_get_romaji(client: &reqwest::Client, english_title: 
             if let Ok(json) = resp.json::<serde_json::Value>().await {
                 if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
                     let target = english_title.to_lowercase();
+                    let clean_target = clean_title(&target);
                     for item in data.iter().take(3) {
                         if let Some(attributes) = item.get("attributes") {
                             let mut is_match = false;
                             let mut romaji_title = None;
                             
                             if let Some(canonical) = attributes.get("canonicalTitle").and_then(|t| t.as_str()) {
-                                if canonical.to_lowercase() == target {
+                                if clean_title(&canonical.to_lowercase()) == clean_target {
                                     is_match = true;
                                 }
                             }
                             
                             if let Some(titles) = attributes.get("titles") {
                                 if let Some(en) = titles.get("en").and_then(|t| t.as_str()) {
-                                    if en.to_lowercase() == target { is_match = true; }
+                                    if clean_title(&en.to_lowercase()) == clean_target { is_match = true; }
                                 }
                                 if let Some(en_us) = titles.get("en_us").and_then(|t| t.as_str()) {
-                                    if en_us.to_lowercase() == target { is_match = true; }
+                                    if clean_title(&en_us.to_lowercase()) == clean_target { is_match = true; }
                                 }
                                 if let Some(en_jp) = titles.get("en_jp").and_then(|t| t.as_str()) {
                                     romaji_title = Some(en_jp.to_string());
-                                    if en_jp.to_lowercase() == target { is_match = true; }
+                                    if clean_title(&en_jp.to_lowercase()) == clean_target { is_match = true; }
                                 }
                             }
                             
@@ -1053,7 +1054,7 @@ async fn check_if_anime_and_get_romaji(client: &reqwest::Client, english_title: 
                             
                             if is_match {
                                 let romaji_to_return = if let Some(rt) = &romaji_title {
-                                    if rt.to_lowercase() != target {
+                                    if clean_title(&rt.to_lowercase()) != clean_target {
                                         Some(rt.clone())
                                     } else {
                                         None
@@ -1300,10 +1301,10 @@ fn is_torrent_mismatch(torrent_title: &str, show_name: &str, romaji_name: Option
                     "sub", "subs", "dub", "dubbed", "eng", "english", "raw", "raws", "uncensored", "cen", "uncen",
                     "remux", "amzn", "nf", "dsnp", "hulu", "max", "tv", "movie", "film", "ova", "oad", "special",
                     "v2", "v3", "v4", "xvid", "divx", "aac", "flac", "mp3", "mkv", "mp4", "avi", "us", "uk", "jp",
-                    "book", "ch", "chapter", "cour"
+                    "book", "ch", "chapter", "cour", "memory", "snow", "frozen", "bond", "hyouketsu", "kizuna"
                 ];
                 if tags.contains(&w) { return Some(false); }
-                if let Ok(re) = Regex::new(r"^(?:s\d+|e\d+|ep\d+|s\d+e\d+|\d+x\d+|v\d+|s\d+-\d+)$") {
+                if let Ok(re) = Regex::new(r"^(?:s\d+|e\d+|ep\d+|s\d+e\d+|\d+x\d+|v\d+|\d+v\d+|ep\d+v\d+|\d+(?:st|nd|rd|th)|s\d+-\d+)$") {
                     if re.is_match(w) { return Some(false); }
                 }
                 return Some(true);
@@ -1469,7 +1470,7 @@ pub async fn get_movie_streams(
     let mut resolved_romaji_name: Option<String> = None;
     let mut resolved_year: Option<String> = None;
     let mut meta_resolved = false;
-    let timeout_dur = std::time::Duration::from_millis(3500);
+    let timeout_dur = std::time::Duration::from_millis(6500);
 
     while !set.is_empty() {
         let elapsed = start_time.elapsed();
@@ -1555,9 +1556,27 @@ pub async fn get_movie_streams(
                                                 Vec::new()
                                             }
                                         };
-                                        let (res1, res2) = tokio::join!(fut1, fut2);
+                                        let fut3 = scrape_nyaa(&client_c4, &cleaned);
+                                        let fut4 = async {
+                                            if let Some(q) = &cleaned_romaji {
+                                                scrape_nyaa(&client_c4, q).await
+                                            } else {
+                                                Vec::new()
+                                            }
+                                        };
+                                        let (res1, res2, res3, res4) = tokio::join!(fut1, fut2, fut3, fut4);
                                         combined = res1;
                                         for stream in res2 {
+                                            if !combined.iter().any(|s| s.info_hash == stream.info_hash) {
+                                                combined.push(stream);
+                                            }
+                                        }
+                                        for stream in res3 {
+                                            if !combined.iter().any(|s| s.info_hash == stream.info_hash) {
+                                                combined.push(stream);
+                                            }
+                                        }
+                                        for stream in res4 {
                                             if !combined.iter().any(|s| s.info_hash == stream.info_hash) {
                                                 combined.push(stream);
                                             }
@@ -1603,6 +1622,7 @@ pub async fn get_series_streams(
     client: &reqwest::Client,
     meta_cache: &std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, (String, Option<String>)>>>,
     stream_cache: &std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, (Vec<Stream>, std::time::Instant)>>>,
+    torrent_files_cache: &std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, Vec<TorrentFile>>>>,
     imdb_id: &str,
     season: u32,
     episode: u32,
@@ -1644,7 +1664,7 @@ pub async fn get_series_streams(
     let mut resolved_romaji_name: Option<String> = None;
     let mut resolved_year: Option<String> = None;
     let mut meta_resolved = false;
-    let timeout_dur = std::time::Duration::from_millis(3500);
+    let timeout_dur = std::time::Duration::from_millis(6500);
 
     while !set.is_empty() {
         let elapsed = start_time.elapsed();
@@ -1730,6 +1750,8 @@ pub async fn get_series_streams(
                                 let q1_nyaa = query1.clone();
                                 set.spawn(async move {
                                     let q2_nyaa = format!("{} {:02}", cleaned, episode);
+                                    let q3_nyaa = cleaned.clone();
+                                    let q4_nyaa = format!("{} S{:02}", cleaned, season);
                                     
                                     let mut combined = Vec::new();
                                     if is_anime {
@@ -1749,8 +1771,24 @@ pub async fn get_series_streams(
                                                 Vec::new()
                                             }
                                         };
+                                        let fut5 = scrape_nyaa(&client_c2, &q3_nyaa);
+                                        let fut6 = async {
+                                            if let Some(romaji) = &cleaned_romaji {
+                                                scrape_nyaa(&client_c2, romaji).await
+                                            } else {
+                                                Vec::new()
+                                            }
+                                        };
+                                        let fut7 = scrape_nyaa(&client_c2, &q4_nyaa);
+                                        let fut8 = async {
+                                            if let Some(romaji) = &cleaned_romaji {
+                                                scrape_nyaa(&client_c2, &format!("{} S{:02}", romaji, season)).await
+                                            } else {
+                                                Vec::new()
+                                            }
+                                        };
 
-                                        let (r1, r2, r3, r4) = tokio::join!(fut1, fut2, fut3, fut4);
+                                        let (r1, r2, r3, r4, r5, r6, r7, r8) = tokio::join!(fut1, fut2, fut3, fut4, fut5, fut6, fut7, fut8);
                                         combined = r1;
                                         for s in r2 {
                                             if !combined.iter().any(|x| x.info_hash == s.info_hash) {
@@ -1763,6 +1801,26 @@ pub async fn get_series_streams(
                                             }
                                         }
                                         for s in r4 {
+                                            if !combined.iter().any(|x| x.info_hash == s.info_hash) {
+                                                combined.push(s);
+                                            }
+                                        }
+                                        for s in r5 {
+                                            if !combined.iter().any(|x| x.info_hash == s.info_hash) {
+                                                combined.push(s);
+                                            }
+                                        }
+                                        for s in r6 {
+                                            if !combined.iter().any(|x| x.info_hash == s.info_hash) {
+                                                combined.push(s);
+                                            }
+                                        }
+                                        for s in r7 {
+                                            if !combined.iter().any(|x| x.info_hash == s.info_hash) {
+                                                combined.push(s);
+                                            }
+                                        }
+                                        for s in r8 {
                                             if !combined.iter().any(|x| x.info_hash == s.info_hash) {
                                                 combined.push(s);
                                             }
@@ -1787,6 +1845,9 @@ pub async fn get_series_streams(
         let b_seeds = extract_seeds(&b.title);
         b_seeds.cmp(&a_seeds)
     });
+
+    // Resolve file indices for season packs
+    resolve_file_indices(client, torrent_files_cache, &mut all_streams, season, episode).await;
 
     println!(
         "[INFO] Series stream resolution completed in {}ms. Returning {} total streams.",
@@ -1813,6 +1874,422 @@ fn extract_seeds(title: &str) -> u32 {
     0
 }
 
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+pub struct TorrentFile {
+    pub path: String,
+    pub size: u64,
+    pub index: u32,
+}
+
+enum Bencode {
+    Int(i64),
+    ByteString(Vec<u8>),
+    List(Vec<Bencode>),
+    Dict(std::collections::BTreeMap<Vec<u8>, Bencode>),
+}
+
+fn parse_bencode(data: &[u8], pos: &mut usize) -> Option<Bencode> {
+    if *pos >= data.len() {
+        return None;
+    }
+    match data[*pos] {
+        b'i' => {
+            *pos += 1;
+            let start = *pos;
+            while *pos < data.len() && data[*pos] != b'e' {
+                *pos += 1;
+            }
+            if *pos >= data.len() {
+                return None;
+            }
+            let s = std::str::from_utf8(&data[start..*pos]).ok()?;
+            let val = s.parse::<i64>().ok()?;
+            *pos += 1; // skip 'e'
+            Some(Bencode::Int(val))
+        }
+        b'l' => {
+            *pos += 1;
+            let mut list = Vec::new();
+            while *pos < data.len() && data[*pos] != b'e' {
+                list.push(parse_bencode(data, pos)?);
+            }
+            if *pos >= data.len() {
+                return None;
+            }
+            *pos += 1; // skip 'e'
+            Some(Bencode::List(list))
+        }
+        b'd' => {
+            *pos += 1;
+            let mut dict = std::collections::BTreeMap::new();
+            while *pos < data.len() && data[*pos] != b'e' {
+                let key = match parse_bencode(data, pos)? {
+                    Bencode::ByteString(b) => b,
+                    _ => return None,
+                };
+                let val = parse_bencode(data, pos)?;
+                dict.insert(key, val);
+            }
+            if *pos >= data.len() {
+                return None;
+            }
+            *pos += 1; // skip 'e'
+            Some(Bencode::Dict(dict))
+        }
+        b'0'..=b'9' => {
+            let start = *pos;
+            while *pos < data.len() && data[*pos] != b':' {
+                *pos += 1;
+            }
+            if *pos >= data.len() {
+                return None;
+            }
+            let len_str = std::str::from_utf8(&data[start..*pos]).ok()?;
+            let len = len_str.parse::<usize>().ok()?;
+            *pos += 1; // skip ':'
+            if *pos + len > data.len() {
+                return None;
+            }
+            let bytes = data[*pos..*pos + len].to_vec();
+            *pos += len;
+            Some(Bencode::ByteString(bytes))
+        }
+        _ => None,
+    }
+}
+
+fn parse_torrent_bytes(bytes: &[u8]) -> Option<Vec<TorrentFile>> {
+    let mut pos = 0;
+    let bencode = parse_bencode(bytes, &mut pos)?;
+    let dict = match bencode {
+        Bencode::Dict(d) => d,
+        _ => return None,
+    };
+    let info = match dict.get(b"info".as_ref())? {
+        Bencode::Dict(d) => d,
+        _ => return None,
+    };
+    
+    let mut files_list = Vec::new();
+    if let Some(files_val) = info.get(b"files".as_ref()) {
+        let files = match files_val {
+            Bencode::List(l) => l,
+            _ => return None,
+        };
+        for (idx, file_val) in files.iter().enumerate() {
+            let file_dict = match file_val {
+                Bencode::Dict(d) => d,
+                _ => continue,
+            };
+            let length = match file_dict.get(b"length".as_ref()) {
+                Some(Bencode::Int(l)) => *l as u64,
+                _ => 0,
+            };
+            let path_val = match file_dict.get(b"path".as_ref()) {
+                Some(Bencode::List(l)) => l,
+                _ => continue,
+            };
+            let mut path_parts = Vec::new();
+            for part in path_val {
+                if let Bencode::ByteString(b) = part {
+                    if let Ok(s) = std::str::from_utf8(b) {
+                        path_parts.push(s.to_string());
+                    }
+                }
+            }
+            if !path_parts.is_empty() {
+                let path = path_parts.join("/");
+                files_list.push(TorrentFile {
+                    path,
+                    size: length,
+                    index: idx as u32,
+                });
+            }
+        }
+    } else {
+        let name_bytes = match info.get(b"name".as_ref())? {
+            Bencode::ByteString(b) => b,
+            _ => return None,
+        };
+        let name = std::str::from_utf8(name_bytes).ok()?.to_string();
+        let length = match info.get(b"length".as_ref()) {
+            Some(Bencode::Int(l)) => *l as u64,
+            _ => 0,
+        };
+        files_list.push(TorrentFile {
+            path: name,
+            size: length,
+            index: 0,
+        });
+    }
+    Some(files_list)
+}
+
+async fn fetch_torrent_files_list(
+    client: &reqwest::Client,
+    info_hash: &str,
+) -> Option<Vec<TorrentFile>> {
+    let info_hash_upper = info_hash.to_uppercase();
+    let urls = vec![
+        format!("https://itorrents.net/torrent/{}.torrent", info_hash_upper),
+        format!("https://itorrents.org/torrent/{}.torrent", info_hash_upper),
+        format!("https://torrage.info/torrent.php?h={}", info_hash_upper),
+        format!("https://btcache.me/torrent/{}", info_hash_upper),
+    ];
+    
+    let mut set = tokio::task::JoinSet::new();
+    for url in urls {
+        let client_clone = client.clone();
+        set.spawn(async move {
+            let req = client_clone.get(&url)
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .timeout(std::time::Duration::from_millis(2000));
+            if let Ok(resp) = req.send().await {
+                if resp.status().is_success() {
+                    if let Some(content_type) = resp.headers().get("content-type") {
+                        if let Ok(ct_str) = content_type.to_str() {
+                            if ct_str.contains("html") {
+                                return None;
+                            }
+                        }
+                    }
+                    if let Ok(bytes) = resp.bytes().await {
+                        if let Some(files) = parse_torrent_bytes(&bytes) {
+                            return Some(files);
+                        }
+                    }
+                }
+            }
+            None
+        });
+    }
+    
+    while let Some(res) = set.join_next().await {
+        if let Ok(Some(files)) = res {
+            return Some(files);
+        }
+    }
+    None
+}
+
+fn parse_episode_from_filename(filename: &str) -> Option<(Option<u32>, u32)> {
+    let lower = filename.to_lowercase();
+    let mut cleaned = lower.clone();
+    
+    // Remove version indicators attached to digits, e.g. "01v2" -> "01"
+    if let Ok(re) = Regex::new(r"(\d+)v\d+") {
+        cleaned = re.replace_all(&cleaned, "$1").to_string();
+    }
+    
+    // Remove resolution specs and hashes
+    cleaned = cleaned.replace("1080p", " ")
+                     .replace("720p", " ")
+                     .replace("480p", " ")
+                     .replace("2160p", " ")
+                     .replace("10bit", " ")
+                     .replace("8bit", " ")
+                     .replace("x264", " ")
+                     .replace("x265", " ")
+                     .replace("h264", " ")
+                     .replace("h265", " ");
+                     
+    if let Ok(re) = Regex::new(r"\[[0-9a-f]{8}\]") {
+        cleaned = re.replace_all(&cleaned, " ").to_string();
+    }
+    if let Ok(re) = Regex::new(r"\b(19\d{2}|20\d{2})\b") {
+        cleaned = re.replace_all(&cleaned, " ").to_string();
+    }
+
+    if let Ok(re) = Regex::new(r"s(\d+)\s*[e\.\-]\s*(\d+)") {
+        if let Some(cap) = re.captures(&cleaned) {
+            let s = cap[1].parse::<u32>().ok();
+            let e = cap[2].parse::<u32>().ok()?;
+            return Some((s, e));
+        }
+    }
+    if let Ok(re) = Regex::new(r"\b(\d+)\s*x\s*(\d+)\b") {
+        if let Some(cap) = re.captures(&cleaned) {
+            let s = cap[1].parse::<u32>().ok();
+            let e = cap[2].parse::<u32>().ok()?;
+            return Some((s, e));
+        }
+    }
+    if let Ok(re) = Regex::new(r"\bep(?:isode)?\s*(\d+)\b") {
+        if let Some(cap) = re.captures(&cleaned) {
+            let e = cap[1].parse::<u32>().ok()?;
+            return Some((None, e));
+        }
+    }
+    if let Ok(re) = Regex::new(r"(?:^|[\s\-\_\[\(\.])(\d+)(?:[\s\-\_\]\)\.]|$)") {
+        for cap in re.captures_iter(&cleaned) {
+            if let Ok(e) = cap[1].parse::<u32>() {
+                if e > 0 && e < 1000 {
+                    return Some((None, e));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn parse_season_from_path(path: &str) -> Option<u32> {
+    let lower = path.to_lowercase();
+    let components: Vec<&str> = lower.split(|c| c == '/' || c == '\\').collect();
+    if components.len() > 1 {
+        for folder in components.iter().take(components.len() - 1).rev() {
+            if let Ok(re) = Regex::new(r"\bs(?:eason)?\s*(\d+)\b") {
+                if let Some(cap) = re.captures(folder) {
+                    if let Ok(s) = cap[1].parse::<u32>() {
+                        return Some(s);
+                    }
+                }
+            }
+            if let Ok(re) = Regex::new(r"\b(\d+)(?:st|nd|rd|th)\s+season\b") {
+                if let Some(cap) = re.captures(folder) {
+                    if let Ok(s) = cap[1].parse::<u32>() {
+                        return Some(s);
+                    }
+                }
+            }
+            if let Ok(re) = Regex::new(r"^\s*(\d+)\s*$") {
+                if let Some(cap) = re.captures(folder) {
+                    if let Ok(s) = cap[1].parse::<u32>() {
+                        if s > 0 && s < 100 {
+                            return Some(s);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn is_file_match(
+    file_path: &str,
+    target_season: u32,
+    target_episode: u32,
+    torrent_info: &TorrentInfo,
+) -> bool {
+    let lower_path = file_path.to_lowercase();
+    let is_video = lower_path.ends_with(".mkv")
+        || lower_path.ends_with(".mp4")
+        || lower_path.ends_with(".avi")
+        || lower_path.ends_with(".mov")
+        || lower_path.ends_with(".wmv")
+        || lower_path.ends_with(".flv")
+        || lower_path.ends_with(".webm")
+        || lower_path.ends_with(".m4v")
+        || lower_path.ends_with(".mpg")
+        || lower_path.ends_with(".mpeg");
+    if !is_video {
+        return false;
+    }
+    
+    // Ignore samples
+    if lower_path.contains("sample") {
+        return false;
+    }
+
+    // If target_season is not 0 (specials season), ignore files that look like specials/OVAs/extras/NC
+    if target_season > 0 {
+        let ignore_keywords = [
+            "nced", "ncop", "ost", "soundtrack", "bonus", "extras", "extra", 
+            "special", "ova", "preview", "trailer", "recap", "interview"
+        ];
+        for kw in ignore_keywords {
+            if lower_path.contains(kw) {
+                return false;
+            }
+        }
+    }
+
+    let filename = lower_path.split(|c| c == '/' || c == '\\').last().unwrap_or(&lower_path);
+    if let Some((file_season_opt, file_episode)) = parse_episode_from_filename(filename) {
+        if file_episode == target_episode {
+            let season = file_season_opt.or_else(|| parse_season_from_path(&lower_path));
+            match season {
+                Some(s) => {
+                    return s == target_season;
+                }
+                None => {
+                    if !torrent_info.seasons.is_empty() {
+                        return torrent_info.seasons.contains(&target_season);
+                    }
+                    return target_season == 1;
+                }
+            }
+        }
+    }
+    false
+}
+
+pub async fn resolve_file_indices(
+    client: &reqwest::Client,
+    torrent_files_cache: &std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, Vec<TorrentFile>>>>,
+    streams: &mut [Stream],
+    season: u32,
+    episode: u32,
+) {
+    let mut set = tokio::task::JoinSet::new();
+    
+    for (idx, stream) in streams.iter().enumerate().take(12) {
+        if let Some(ref hash) = stream.info_hash {
+            let torrent_title = extract_torrent_title(&stream.title);
+            let info = parse_torrent_info(&torrent_title);
+            if info.is_pack {
+                let client = client.clone();
+                let cache = torrent_files_cache.clone();
+                let hash = hash.clone();
+                
+                set.spawn(async move {
+                    let cached_files = {
+                        let cache_read = cache.read().await;
+                        cache_read.get(&hash).cloned()
+                    };
+                    
+                    let files = match cached_files {
+                        Some(f) => Some(f),
+                        None => {
+                            if let Some(f) = fetch_torrent_files_list(&client, &hash).await {
+                                let mut cache_write = cache.write().await;
+                                cache_write.insert(hash.clone(), f.clone());
+                                Some(f)
+                            } else {
+                                None
+                            }
+                        }
+                    };
+                    
+                    let mut file_idx = None;
+                    if let Some(ref files_list) = files {
+                        for file in files_list {
+                            if is_file_match(&file.path, season, episode, &info) {
+                                file_idx = Some(file.index);
+                                break;
+                            }
+                        }
+                    }
+                    
+                    (idx, file_idx)
+                });
+            }
+        }
+    }
+    
+    let resolve_timeout = std::time::Duration::from_millis(3500);
+    let _ = tokio::time::timeout(resolve_timeout, async {
+        while let Some(res) = set.join_next().await {
+            if let Ok((idx, file_idx)) = res {
+                if let Some(f_idx) = file_idx {
+                    streams[idx].file_idx = Some(f_idx);
+                }
+            }
+        }
+    }).await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1822,31 +2299,31 @@ mod tests {
         let show = "Re:Zero kara Hajimeru Isekai Seikatsu";
         
         // 1. OVA / Special mismatch
-        assert!(!verify_torrent_match("[Erai-raws] Re:Zero kara Hajimeru Isekai Seikatsu - Memory Snow - 02 [1080p].mkv", show, 1, 2));
-        assert!(verify_torrent_match("[Erai-raws] Re:Zero kara Hajimeru Isekai Seikatsu - Memory Snow - 02 [1080p].mkv", show, 0, 2));
+        assert!(!verify_torrent_match("[Erai-raws] Re:Zero kara Hajimeru Isekai Seikatsu - Memory Snow - 02 [1080p].mkv", show, None, None, 1, 2));
+        assert!(verify_torrent_match("[Erai-raws] Re:Zero kara Hajimeru Isekai Seikatsu - Memory Snow - 02 [1080p].mkv", show, None, None, 0, 2));
         
         // 2. Correct season and episode
-        assert!(verify_torrent_match("[Erai-raws] Re:Zero kara Hajimeru Isekai Seikatsu - 02 [1080p].mkv", show, 1, 2));
-        assert!(!verify_torrent_match("[Erai-raws] Re:Zero kara Hajimeru Isekai Seikatsu - 12 [1080p].mkv", show, 1, 2));
+        assert!(verify_torrent_match("[Erai-raws] Re:Zero kara Hajimeru Isekai Seikatsu - 02 [1080p].mkv", show, None, None, 1, 2));
+        assert!(!verify_torrent_match("[Erai-raws] Re:Zero kara Hajimeru Isekai Seikatsu - 12 [1080p].mkv", show, None, None, 1, 2));
         
         // 3. Explicit season
-        assert!(verify_torrent_match("[Erai-raws] Re:Zero S1 - 02 [1080p].mkv", show, 1, 2));
-        assert!(!verify_torrent_match("[Erai-raws] Re:Zero S2 - 02 [1080p].mkv", show, 1, 2));
+        assert!(verify_torrent_match("[Erai-raws] Re:Zero S1 - 02 [1080p].mkv", show, None, None, 1, 2));
+        assert!(!verify_torrent_match("[Erai-raws] Re:Zero S2 - 02 [1080p].mkv", show, None, None, 1, 2));
         
         // 4. Batch/Pack verification
-        assert!(verify_torrent_match("[SubsPlease] Re:Zero S1 Complete [1080p]", show, 1, 2));
-        assert!(!verify_torrent_match("[SubsPlease] Re:Zero S2 Complete [1080p]", show, 1, 2));
+        assert!(verify_torrent_match("[SubsPlease] Re:Zero S1 Complete [1080p]", show, None, None, 1, 2));
+        assert!(!verify_torrent_match("[SubsPlease] Re:Zero S2 Complete [1080p]", show, None, None, 1, 2));
         
         // 5. Versioning
-        assert!(verify_torrent_match("[Erai-raws] Re:Zero kara Hajimeru Isekai Seikatsu - 02v2 [1080p].mkv", show, 1, 2));
+        assert!(verify_torrent_match("[Erai-raws] Re:Zero kara Hajimeru Isekai Seikatsu - 02v2 [1080p].mkv", show, None, None, 1, 2));
 
         // 6. Ordinal seasons
-        assert!(verify_torrent_match("[Erai-raws] Re:Zero kara Hajimeru Isekai Seikatsu - 2nd Season - 02 [1080p].mkv", show, 2, 2));
-        assert!(!verify_torrent_match("[Erai-raws] Re:Zero kara Hajimeru Isekai Seikatsu - 2nd Season - 02 [1080p].mkv", show, 1, 2));
-        assert!(!verify_torrent_match("[Erai-raws] Re:Zero kara Hajimeru Isekai Seikatsu - 3rd Season - 02 [1080p].mkv", show, 1, 2));
+        assert!(verify_torrent_match("[Erai-raws] Re:Zero kara Hajimeru Isekai Seikatsu - 2nd Season - 02 [1080p].mkv", show, None, None, 2, 2));
+        assert!(!verify_torrent_match("[Erai-raws] Re:Zero kara Hajimeru Isekai Seikatsu - 2nd Season - 02 [1080p].mkv", show, None, None, 1, 2));
+        assert!(!verify_torrent_match("[Erai-raws] Re:Zero kara Hajimeru Isekai Seikatsu - 3rd Season - 02 [1080p].mkv", show, None, None, 1, 2));
 
         // 7. Season 1 protection: S1 Episode 2 should not match S2 Episode 2
-        assert!(!verify_torrent_match("[Erai-raws] Re:Zero kara Hajimeru Isekai Seikatsu - 02 [1080p].mkv", show, 2, 2));
+        assert!(!verify_torrent_match("[Erai-raws] Re:Zero kara Hajimeru Isekai Seikatsu - 02 [1080p].mkv", show, None, None, 2, 2));
     }
 
     #[test]
@@ -1962,5 +2439,22 @@ mod tests {
             }
             Err(e) => println!("Send error: {:?}", e),
         }
+    }
+
+    #[test]
+    fn test_parse_episode_from_filename() {
+        assert_eq!(parse_episode_from_filename("Bocchi the Rock! - S01E01.mkv"), Some((Some(1), 1)));
+        assert_eq!(parse_episode_from_filename("02.mp4"), Some((None, 2)));
+        assert_eq!(parse_episode_from_filename("[SubsPlease] Bocchi the Rock! - 12 (1080p).mkv"), Some((None, 12)));
+        assert_eq!(parse_episode_from_filename("Bocchi the Rock! - Ep 05.mkv"), Some((None, 5)));
+        assert_eq!(parse_episode_from_filename("2x03.mkv"), Some((Some(2), 3)));
+    }
+
+    #[test]
+    fn test_parse_season_from_path() {
+        assert_eq!(parse_season_from_path("Season 2/01.mkv"), Some(2));
+        assert_eq!(parse_season_from_path("S3/01.mkv"), Some(3));
+        assert_eq!(parse_season_from_path("2nd Season/01.mkv"), Some(2));
+        assert_eq!(parse_season_from_path("Bocchi the Rock/01.mkv"), None);
     }
 }

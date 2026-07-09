@@ -1,6 +1,5 @@
 mod stremio;
 mod cinemeta;
-mod catalog;
 mod scraper;
 
 use axum::{
@@ -11,7 +10,7 @@ use axum::{
     routing::get,
     Router,
 };
-use stremio::{Catalog, CatalogResponse, Manifest, StreamResponse, Stream};
+use stremio::{Manifest, StreamResponse, Stream};
 use std::net::SocketAddr;
 use tower_http::cors::{Any, CorsLayer};
 
@@ -82,8 +81,6 @@ async fn main() {
     let app = Router::new()
         .route("/", get(landing_handler))
         .route("/manifest.json", get(manifest_handler))
-        .route("/catalog/:type/:id", get(catalog_handler))
-        .route("/catalog/:type/:id/:extra", get(catalog_handler)) // handles extra parameters
         .route("/stream/:type/:id", get(stream_handler))
         .route("/favicon.ico", get(favicon_handler))
         .route("/favicon.svg", get(favicon_handler))
@@ -120,46 +117,13 @@ async fn manifest_handler() -> impl IntoResponse {
         version: "1.0.0".to_string(),
         name: "Bitlab".to_string(),
         description: Some("A high-performance Stremio scraper addon by Bitlab.".to_string()),
-        resources: vec!["catalog".to_string(), "stream".to_string()],
+        resources: vec!["stream".to_string()],
         types: vec!["movie".to_string(), "series".to_string()],
-        catalogs: vec![
-            Catalog {
-                r#type: "movie".to_string(),
-                id: "popular_movies".to_string(),
-                name: "🚀 Popular Movies (Scraped)".to_string(),
-                extra: None,
-            },
-            Catalog {
-                r#type: "series".to_string(),
-                id: "popular_series".to_string(),
-                name: "🚀 Popular TV Shows (Scraped)".to_string(),
-                extra: None,
-            },
-        ],
+        catalogs: vec![],
         id_prefixes: vec!["tt".to_string()],
     };
 
     Json(manifest)
-}
-
-async fn catalog_handler(
-    Path((r#type, id)): Path<(String, String)>,
-    State(state): State<AppState>,
-) -> impl IntoResponse {
-    let clean_id = id.strip_suffix(".json").unwrap_or(&id);
-    println!("Catalog requested: type={}, id={}", r#type, clean_id);
-
-    let metas = match (r#type.as_str(), clean_id) {
-        ("movie", "popular_movies") => {
-            catalog::get_popular_movies(&state.client, &state.meta_cache).await
-        }
-        ("series", "popular_series") => {
-            catalog::get_popular_series(&state.client, &state.meta_cache).await
-        }
-        _ => Vec::new(),
-    };
-
-    Json(CatalogResponse { metas })
 }
 
 async fn stream_handler(

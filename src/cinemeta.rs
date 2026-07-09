@@ -5,9 +5,6 @@ use serde::Deserialize;
 pub struct CinemetaMeta {
     pub name: String,
     pub year: Option<String>,
-    pub poster: Option<String>,
-    pub description: Option<String>,
-    pub imdb_rating: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone)]

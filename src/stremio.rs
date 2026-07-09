@@ -36,28 +36,6 @@ pub struct CatalogExtra {
     pub options: Option<Vec<String>>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct CatalogResponse {
-    pub metas: Vec<MetaPreview>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct MetaPreview {
-    pub id: String,
-    pub r#type: String,
-    pub name: String,
-    pub poster: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub poster_shape: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub release_info: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub imdb_rating: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]

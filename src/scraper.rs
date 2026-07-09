@@ -2263,16 +2263,18 @@ pub async fn resolve_file_indices(
                     };
                     
                     let mut file_idx = None;
+                    let mut matched_filename = None;
                     if let Some(ref files_list) = files {
                         for file in files_list {
                             if is_file_match(&file.path, season, episode, &info) {
                                 file_idx = Some(file.index);
+                                matched_filename = Some(file.path.clone());
                                 break;
                             }
                         }
                     }
                     
-                    (idx, file_idx)
+                    (idx, file_idx, matched_filename, hash)
                 });
             }
         }
@@ -2281,9 +2283,17 @@ pub async fn resolve_file_indices(
     let resolve_timeout = std::time::Duration::from_millis(3500);
     let _ = tokio::time::timeout(resolve_timeout, async {
         while let Some(res) = set.join_next().await {
-            if let Ok((idx, file_idx)) = res {
+            if let Ok((idx, file_idx, matched_filename, hash)) = res {
                 if let Some(f_idx) = file_idx {
                     streams[idx].file_idx = Some(f_idx);
+                    if let Some(fname) = matched_filename {
+                        streams[idx].behavior_hints = Some(crate::stremio::BehaviorHints {
+                            not_video: None,
+                            proxy_headers: None,
+                            binge_group: Some(format!("bitlab|{}", hash)),
+                            filename: Some(fname),
+                        });
+                    }
                 }
             }
         }

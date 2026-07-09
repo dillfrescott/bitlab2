@@ -67,4 +67,9 @@ pub struct BehaviorHints {
     pub not_video: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy_headers: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "bingeGroup")]
+    pub binge_group: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
 }

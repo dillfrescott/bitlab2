@@ -85,6 +85,8 @@ async fn main() {
         .route("/catalog/:type/:id", get(catalog_handler))
         .route("/catalog/:type/:id/:extra", get(catalog_handler)) // handles extra parameters
         .route("/stream/:type/:id", get(stream_handler))
+        .route("/favicon.ico", get(favicon_handler))
+        .route("/favicon.svg", get(favicon_handler))
         .layer(middleware::from_fn(host_validation_middleware))
         .layer(cors)
         .with_state(state);
@@ -99,6 +101,17 @@ async fn main() {
     
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
+}
+
+async fn favicon_handler() -> impl IntoResponse {
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="black" stroke="white" stroke-width="2"/></svg>"#;
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "image/svg+xml"),
+            (axum::http::header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        svg,
+    )
 }
 
 async fn manifest_handler() -> impl IntoResponse {
@@ -204,6 +217,7 @@ async fn landing_handler(headers: HeaderMap) -> impl IntoResponse {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Bitlab</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
     <style>
         body {{

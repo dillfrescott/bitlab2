@@ -239,7 +239,7 @@ fn detect_quality(name: &str) -> &'static str {
 /// Scrapes a single YTS mirror
 async fn scrape_single_yts(client: reqwest::Client, url: String) -> Vec<Stream> {
     let mut streams = Vec::new();
-    let req = client.get(&url).timeout(std::time::Duration::from_millis(2500));
+    let req = client.get(&url).timeout(std::time::Duration::from_millis(6000));
     
     if let Ok(resp) = req.send().await {
         if let Ok(json_resp) = resp.json::<YtsSearchResponse>().await {
@@ -322,7 +322,7 @@ async fn scrape_single_tpb(
     let mut streams = Vec::new();
     let req = client.get(&url)
         .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-        .timeout(std::time::Duration::from_millis(2500));
+        .timeout(std::time::Duration::from_millis(6000));
         
     let html_text = match req.send().await {
         Ok(resp) => match resp.text().await {
@@ -465,7 +465,7 @@ pub async fn scrape_apibay(
     
     let req = client.get(&url)
         .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-        .timeout(std::time::Duration::from_millis(2500));
+        .timeout(std::time::Duration::from_millis(6000));
         
     let resp = match req.send().await {
         Ok(r) => r,
@@ -556,7 +556,7 @@ pub async fn scrape_bitsearch(
     
     let req = client.get(&url)
         .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-        .timeout(std::time::Duration::from_millis(2500));
+        .timeout(std::time::Duration::from_millis(6000));
         
     let resp = match req.send().await {
         Ok(r) => r,
@@ -648,7 +648,7 @@ async fn scrape_single_solidtorrent(
     let mut streams = Vec::new();
     let req = client.get(&url)
         .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-        .timeout(std::time::Duration::from_millis(2500));
+        .timeout(std::time::Duration::from_millis(6000));
         
     if let Ok(resp) = req.send().await {
         if resp.status().is_success() {
@@ -747,7 +747,7 @@ async fn scrape_single_nyaa(client: reqwest::Client, url: String) -> Vec<Stream>
     let mut streams = Vec::new();
     let req = client.get(&url)
         .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-        .timeout(std::time::Duration::from_millis(2500));
+        .timeout(std::time::Duration::from_millis(6000));
         
     if let Ok(resp) = req.send().await {
         if resp.status().is_success() {
@@ -852,7 +852,7 @@ async fn scrape_single_eztv(
         
         let req = client.get(&url)
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            .timeout(std::time::Duration::from_millis(3000));
+            .timeout(std::time::Duration::from_millis(6000));
             
         let resp_text = match req.send().await {
             Ok(resp) => match resp.text().await {
@@ -996,7 +996,7 @@ pub async fn fetch_meta_cached(
     
     let meta_fut = fetch_meta(client, r#type, imdb_id);
     let meta_res = tokio::time::timeout(
-        std::time::Duration::from_millis(1500),
+        std::time::Duration::from_millis(6000),
         meta_fut
     ).await;
     
@@ -1097,8 +1097,7 @@ fn is_special_or_ova_mismatch(torrent_title: &str, show_name: &str, target_seaso
     
     // Disallowed special keywords
     let special_keywords = &[
-        "ova", "oad", "special", "movie", "film", 
-        "memory snow", "frozen bond", "hyouketsu no kizuna"
+        "ova", "oad", "special", "movie", "film"
     ];
     
     for kw in special_keywords {
@@ -1206,14 +1205,8 @@ fn parse_torrent_info(title: &str) -> TorrentInfo {
         }
     }
 
-    // Pattern 2c: part xx or cour xx (common in anime seasons)
-    if let Ok(part_re) = Regex::new(r"\b(?:part|cour)\s*(\d+)\b") {
-        for cap in part_re.captures_iter(&cleaned_title) {
-            if let Ok(s) = cap[1].parse::<u32>() {
-                if !seasons.contains(&s) { seasons.push(s); }
-            }
-        }
-    }
+    // Pattern 2c: part xx or cour xx is deliberately NOT parsed into seasons.
+    // 'Part 1' of Season 4 should not make the parser think it applies to Season 1.
 
     // Pattern 2d: Sxx-Sxx or Season x-y
     if let Ok(s_range_re) = Regex::new(r"\bs(?:easons?)?\s*(\d+)\s*(?:\-|\~|to)\s*(?:s(?:easons?)?\s*)?(\d+)\b") {
@@ -1285,8 +1278,19 @@ fn parse_torrent_info(title: &str) -> TorrentInfo {
     TorrentInfo { seasons, episodes, is_pack }
 }
 
-fn is_torrent_mismatch(torrent_title: &str, show_name: &str, romaji_name: Option<&str>, target_year: Option<&str>, is_series: bool) -> bool {
-    let t_clean = clean_title(&torrent_title.to_lowercase());
+fn is_torrent_mismatch(torrent_title: &str, show_name: &str, romaji_name: Option<&str>, target_year: Option<&str>, target_season: Option<u32>, is_series: bool) -> bool {
+    let original_t_clean = clean_title(&torrent_title.to_lowercase());
+
+    // Strip text inside [] or () to remove release groups, checksums, and resolution tags inside brackets
+    let mut no_brackets = String::new();
+    let mut in_bracket = 0;
+    for c in torrent_title.chars() {
+        if c == '[' || c == '(' { in_bracket += 1; }
+        else if c == ']' || c == ')' { if in_bracket > 0 { in_bracket -= 1; } }
+        else if in_bracket == 0 { no_brackets.push(c); }
+    }
+    
+    let t_clean = clean_title(&no_brackets.to_lowercase());
     
     let mut base_title = t_clean.clone();
     if let Ok(re) = Regex::new(r"\b(s\d+e\d+|s\d+|ep?\d+|\d+x\d+|season\s*\d+|episode\s*\d+|19\d{2}|20\d{2}|1080p|720p|2160p|4k)\b") {
@@ -1306,8 +1310,9 @@ fn is_torrent_mismatch(torrent_title: &str, show_name: &str, romaji_name: Option
         }
     }
     
+    let base_words: Vec<&str> = base_title.split_whitespace().collect();
+    
     if !sig_words.is_empty() {
-        let base_words: Vec<&str> = base_title.split_whitespace().collect();
         let mut has_overlap = false;
         for sw in &sig_words {
             if base_words.contains(&sw.as_str()) {
@@ -1320,35 +1325,37 @@ fn is_torrent_mismatch(torrent_title: &str, show_name: &str, romaji_name: Option
         }
     }
     
-    let check_spinoff = |name: &str| -> Option<bool> {
-        let clean_name = clean_title(&name.to_lowercase());
-        if let Some(idx) = t_clean.find(&clean_name) {
-            let after_match = &t_clean[idx + clean_name.len()..];
-            let words: Vec<&str> = after_match.split_whitespace().collect();
-            if let Some(&w) = words.first() {
-                if w.parse::<u32>().is_ok() { return Some(false); }
-                let tags = [
-                    "s", "e", "se", "ep", "season", "episode", "complete", "batch", "part", "pt", "vol", "volume",
-                    "1080p", "720p", "2160p", "4k", "hd", "fhd", "uhd", "bluray", "blu", "ray", "brrip", "bdrip",
-                    "web", "webrip", "webdl", "dvd", "dvdrip", "x264", "h264", "x265", "hevc", "10bit", "dual", "audio",
-                    "sub", "subs", "dub", "dubbed", "eng", "english", "raw", "raws", "uncensored", "cen", "uncen",
-                    "remux", "amzn", "nf", "dsnp", "hulu", "max", "tv", "movie", "film", "ova", "oad", "special",
-                    "v2", "v3", "v4", "xvid", "divx", "aac", "flac", "mp3", "mkv", "mp4", "avi", "us", "uk", "jp",
-                    "book", "ch", "chapter", "cour", "memory", "snow", "frozen", "bond", "hyouketsu", "kizuna"
-                ];
-                if tags.contains(&w) { return Some(false); }
-                if let Ok(re) = Regex::new(r"^(?:s\d+|e\d+|ep\d+|s\d+e\d+|\d+x\d+|v\d+|\d+v\d+|ep\d+v\d+|\d+(?:st|nd|rd|th)|s\d+-\d+)$") {
-                    if re.is_match(w) { return Some(false); }
-                }
-                return Some(true);
+    // Generic spinoff check: if target_season != 0, ensure no unexpected extra words exist in the base title
+    if target_season != Some(0) {
+        let tags = [
+            "s", "e", "se", "ep", "season", "episode", "complete", "batch", "part", "pt", "vol", "volume",
+            "1080p", "720p", "2160p", "4k", "hd", "fhd", "uhd", "bluray", "blu", "ray", "brrip", "bdrip",
+            "web", "webrip", "webdl", "dvd", "dvdrip", "x264", "h264", "x265", "hevc", "10bit", "dual", "audio",
+            "sub", "subs", "dub", "dubbed", "eng", "english", "raw", "raws", "uncensored", "cen", "uncen",
+            "remux", "amzn", "nf", "dsnp", "hulu", "max", "tv", "movie", "film", "ova", "oad", "special",
+            "v2", "v3", "v4", "xvid", "divx", "aac", "flac", "mp3", "mkv", "mp4", "avi", "us", "uk", "jp",
+            "book", "ch", "chapter", "cour"
+        ];
+        
+        let mut last_match_idx = None;
+        for (i, &w) in base_words.iter().enumerate() {
+            if sig_words.contains(&w.to_string()) {
+                last_match_idx = Some(i);
             }
         }
-        None
-    };
-
-    if let Some(true) = check_spinoff(show_name) { return true; }
-    if let Some(r_name) = romaji_name {
-        if let Some(true) = check_spinoff(r_name) { return true; }
+        
+        if let Some(idx) = last_match_idx {
+            let spinoff_re = Regex::new(r"^(?:s\d+|e\d+|ep\d+|s\d+e\d+|\d+x\d+|v\d+|\d+v\d+|ep\d+v\d+|\d+(?:st|nd|rd|th)|s\d+-\d+)$").ok();
+            for &w in base_words.iter().skip(idx + 1) {
+                if w.parse::<u32>().is_ok() { continue; }
+                if tags.contains(&w) { continue; }
+                if ignore_words.contains(&w) { continue; }
+                if let Some(re) = &spinoff_re {
+                    if re.is_match(w) { continue; }
+                }
+                return true;
+            }
+        }
     }
 
     // Year check: if the torrent has a 19xx/20xx year, it must match the target year.
@@ -1358,9 +1365,9 @@ fn is_torrent_mismatch(torrent_title: &str, show_name: &str, romaji_name: Option
             let mut found_any_year = false;
             let mut year_matches = false;
             if let Ok(re_year) = Regex::new(r"\b(19\d{2}|20\d{2})\b") {
-                for cap in re_year.captures_iter(&t_clean) {
+                for cap in re_year.captures_iter(&original_t_clean) {
                     if let Ok(y) = cap[1].parse::<i32>() {
-                        if y == 1920 { continue; } // ignore 1920x1080 resolution artifact
+                        if y == 1920 || y == 1080 { continue; } // ignore resolution artifact
                         found_any_year = true;
                         if is_series {
                             if y >= t_y - 1 {
@@ -1391,7 +1398,7 @@ fn verify_torrent_match(
     target_season: u32,
     target_episode: u32,
 ) -> bool {
-    if is_torrent_mismatch(title, show_name, romaji_name, target_year, true) {
+    if is_torrent_mismatch(title, show_name, romaji_name, target_year, Some(target_season), true) {
         return false;
     }
 
@@ -1503,7 +1510,7 @@ pub async fn get_movie_streams(
     let mut resolved_romaji_name: Option<String> = None;
     let mut resolved_year: Option<String> = None;
     let mut meta_resolved = false;
-    let timeout_dur = std::time::Duration::from_millis(6500);
+    let timeout_dur = std::time::Duration::from_millis(6000);
 
     while !set.is_empty() {
         let elapsed = start_time.elapsed();
@@ -1519,7 +1526,7 @@ pub async fn get_movie_streams(
                         for s in streams {
                             if let Some(show_name) = &resolved_show_name {
                                 let torrent_title = extract_torrent_title(&s.title);
-                                if is_torrent_mismatch(&torrent_title, show_name, resolved_romaji_name.as_deref(), resolved_year.as_deref(), false) {
+                                if is_torrent_mismatch(&torrent_title, show_name, resolved_romaji_name.as_deref(), resolved_year.as_deref(), None, false) {
                                     continue;
                                 }
                             }
@@ -1697,7 +1704,7 @@ pub async fn get_series_streams(
     let mut resolved_romaji_name: Option<String> = None;
     let mut resolved_year: Option<String> = None;
     let mut meta_resolved = false;
-    let timeout_dur = std::time::Duration::from_millis(6500);
+    let timeout_dur = std::time::Duration::from_millis(6000);
 
     while !set.is_empty() {
         let elapsed = start_time.elapsed();
@@ -2110,7 +2117,7 @@ async fn fetch_torrent_files_list(
         set.spawn(async move {
             let req = client_clone.get(&url)
                 .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                .timeout(std::time::Duration::from_millis(2000));
+                .timeout(std::time::Duration::from_millis(6000));
             if let Ok(resp) = req.send().await {
                 if resp.status().is_success() {
                     if let Some(content_type) = resp.headers().get("content-type") {
@@ -2358,7 +2365,7 @@ pub async fn resolve_file_indices(
         }
     }
     
-    let resolve_timeout = std::time::Duration::from_millis(3500);
+    let resolve_timeout = std::time::Duration::from_millis(6000);
     let _ = tokio::time::timeout(resolve_timeout, async {
         while let Some(res) = set.join_next().await {
             if let Ok((idx, file_idx, matched_filename, hash)) = res {
@@ -2388,7 +2395,7 @@ pub async fn fetch_anizip_absolute_episode(client: &reqwest::Client, imdb_or_kit
     
     let req = client.get(&url)
         .header("User-Agent", "Mozilla/5.0")
-        .timeout(std::time::Duration::from_millis(2500));
+        .timeout(std::time::Duration::from_millis(6000));
         
     if let Ok(resp) = req.send().await {
         if let Ok(data) = resp.json::<AniZipResponse>().await {

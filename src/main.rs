@@ -33,7 +33,7 @@ async fn main() {
 
     let state = AppState {
         client: reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(6))
             .build()
             .unwrap(),
         meta_cache: Arc::new(RwLock::new(HashMap::new())),

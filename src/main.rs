@@ -120,7 +120,7 @@ async fn manifest_handler() -> impl IntoResponse {
         resources: vec!["stream".to_string()],
         types: vec!["movie".to_string(), "series".to_string()],
         catalogs: vec![],
-        id_prefixes: vec!["tt".to_string()],
+        id_prefixes: vec!["tt".to_string(), "kitsu".to_string()],
     };
 
     Json(manifest)
@@ -139,12 +139,20 @@ async fn stream_handler(
         }
         "series" => {
             // Series IDs are formatted as imdb_id:season:episode
+            // But kitsu IDs are formatted as kitsu:id:episode
             let parts: Vec<&str> = clean_id.split(':').collect();
             if parts.len() == 3 {
-                let imdb_id = parts[0];
-                let season = parts[1].parse::<u32>().unwrap_or(1);
-                let episode = parts[2].parse::<u32>().unwrap_or(1);
-                scraper::get_series_streams(&state.client, &state.meta_cache, &state.stream_cache, &state.torrent_files_cache, imdb_id, season, episode).await
+                if parts[0] == "kitsu" {
+                    let kitsu_id = format!("kitsu:{}", parts[1]);
+                    let episode = parts[2].parse::<u32>().unwrap_or(1);
+                    // Kitsu does not have seasons, default to season 1
+                    scraper::get_series_streams(&state.client, &state.meta_cache, &state.stream_cache, &state.torrent_files_cache, &kitsu_id, 1, episode).await
+                } else {
+                    let imdb_id = parts[0];
+                    let season = parts[1].parse::<u32>().unwrap_or(1);
+                    let episode = parts[2].parse::<u32>().unwrap_or(1);
+                    scraper::get_series_streams(&state.client, &state.meta_cache, &state.stream_cache, &state.torrent_files_cache, imdb_id, season, episode).await
+                }
             } else {
                 Vec::new()
             }

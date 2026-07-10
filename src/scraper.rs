@@ -3,6 +3,20 @@ use crate::cinemeta::fetch_meta;
 use serde::Deserialize;
 use regex::Regex;
 use scraper::{Html, Selector};
+use std::collections::HashMap;
+
+#[allow(dead_code)]
+#[derive(Deserialize, Debug)]
+pub struct AniZipResponse {
+    pub episodes: HashMap<String, AniZipEpisode>,
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AniZipEpisode {
+    pub absolute_episode_number: Option<u32>,
+}
 
 #[allow(dead_code)]
 #[derive(Deserialize, Debug)]
@@ -1109,6 +1123,25 @@ fn parse_torrent_info(title: &str) -> TorrentInfo {
     let mut episodes = Vec::new();
     let mut is_pack = false;
 
+    // Use anitomy as a powerful fallback for anime
+    let mut anitomy = anitomy::Anitomy::new();
+    if let Ok(elements) = anitomy.parse(title) {
+        if let Some(ep_str) = elements.get(anitomy::ElementCategory::EpisodeNumber) {
+            if let Ok(ep) = ep_str.parse::<u32>() {
+                if !episodes.contains(&ep) {
+                    episodes.push(ep);
+                }
+            }
+        }
+        if let Some(season_str) = elements.get(anitomy::ElementCategory::AnimeSeason) {
+            if let Ok(s) = season_str.parse::<u32>() {
+                if !seasons.contains(&s) {
+                    seasons.push(s);
+                }
+            }
+        }
+    }
+
     // Remove common confusing numbers
     let mut cleaned_title = title_lower.clone();
     cleaned_title = cleaned_title.replace("1080p", " ")
@@ -1849,23 +1882,38 @@ pub async fn get_series_streams(
     // Resolve file indices for better accuracy
     resolve_file_indices(client, torrent_files_cache, &mut all_streams, season, episode).await;
 
+    let absolute_episode = fetch_anizip_absolute_episode(client, imdb_id, episode).await;
+
     // Filter out streams that would play the wrong episode if file_idx is missing
-    if episode > 1 {
-        all_streams.retain(|s| {
-            if s.file_idx.is_some() {
-                return true;
-            }
-            let torrent_title = extract_torrent_title(&s.title);
-            let info = parse_torrent_info(&torrent_title);
-            if info.is_pack {
+    all_streams.retain(|s| {
+        if s.file_idx.is_some() {
+            return true;
+        }
+        let torrent_title = extract_torrent_title(&s.title);
+        let info = parse_torrent_info(&torrent_title);
+        
+        // If it's a pack and we couldn't resolve the exact file, drop it to prevent playing the wrong file
+        if info.is_pack {
+            return false;
+        }
+        
+        // If we explicitly parsed episodes and our target is not one of them, drop it
+        if !info.episodes.is_empty() {
+            let matches_relative = info.episodes.contains(&episode);
+            let matches_absolute = absolute_episode.map_or(false, |abs| info.episodes.contains(&abs));
+            
+            if !matches_relative && !matches_absolute {
                 return false;
             }
-            if !info.episodes.contains(&episode) {
-                return false;
-            }
-            true
-        });
-    }
+        }
+
+        // If we explicitly parsed seasons and our target is not one of them, drop it
+        if !info.seasons.is_empty() && !info.seasons.contains(&season) {
+            return false;
+        }
+        
+        true
+    });
 
     println!(
         "[INFO] Series stream resolution completed in {}ms. Returning {} total streams.",
@@ -2328,6 +2376,28 @@ pub async fn resolve_file_indices(
             }
         }
     }).await;
+}
+
+pub async fn fetch_anizip_absolute_episode(client: &reqwest::Client, imdb_or_kitsu: &str, episode: u32) -> Option<u32> {
+    let url = if imdb_or_kitsu.starts_with("kitsu:") {
+        let kitsu_id = imdb_or_kitsu.trim_start_matches("kitsu:");
+        format!("https://api.ani.zip/mappings?kitsu_id={}", kitsu_id)
+    } else {
+        format!("https://api.ani.zip/mappings?imdb_id={}", imdb_or_kitsu)
+    };
+    
+    let req = client.get(&url)
+        .header("User-Agent", "Mozilla/5.0")
+        .timeout(std::time::Duration::from_millis(2500));
+        
+    if let Ok(resp) = req.send().await {
+        if let Ok(data) = resp.json::<AniZipResponse>().await {
+            if let Some(ep) = data.episodes.get(&episode.to_string()) {
+                return ep.absolute_episode_number;
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

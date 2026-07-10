@@ -1846,8 +1846,26 @@ pub async fn get_series_streams(
         b_seeds.cmp(&a_seeds)
     });
 
-    // Resolve file indices for season packs
+    // Resolve file indices for better accuracy
     resolve_file_indices(client, torrent_files_cache, &mut all_streams, season, episode).await;
+
+    // Filter out streams that would play the wrong episode if file_idx is missing
+    if episode > 1 {
+        all_streams.retain(|s| {
+            if s.file_idx.is_some() {
+                return true;
+            }
+            let torrent_title = extract_torrent_title(&s.title);
+            let info = parse_torrent_info(&torrent_title);
+            if info.is_pack {
+                return false;
+            }
+            if !info.episodes.contains(&episode) {
+                return false;
+            }
+            true
+        });
+    }
 
     println!(
         "[INFO] Series stream resolution completed in {}ms. Returning {} total streams.",
@@ -2250,7 +2268,7 @@ pub async fn resolve_file_indices(
         if let Some(ref hash) = stream.info_hash {
             let torrent_title = extract_torrent_title(&stream.title);
             let info = parse_torrent_info(&torrent_title);
-            if info.is_pack {
+            if true { // always try to resolve file indices for better accuracy
                 let client = client.clone();
                 let cache = torrent_files_cache.clone();
                 let hash = hash.clone();

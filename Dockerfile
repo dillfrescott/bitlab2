@@ -7,6 +7,7 @@ WORKDIR /usr/src/app
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
+    g++ \
     && rm -rf /var/lib/apt/lists/*
 
 # Cache dependencies: Create a dummy main.rs and build dependencies first

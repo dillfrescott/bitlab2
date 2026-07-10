@@ -2082,7 +2082,7 @@ fn parse_episode_from_filename(filename: &str) -> Option<(Option<u32>, u32)> {
         cleaned = re.replace_all(&cleaned, "$1").to_string();
     }
     
-    // Remove resolution specs and hashes
+    // Remove resolution specs, codecs, and audio channels
     cleaned = cleaned.replace("1080p", " ")
                      .replace("720p", " ")
                      .replace("480p", " ")
@@ -2092,7 +2092,12 @@ fn parse_episode_from_filename(filename: &str) -> Option<(Option<u32>, u32)> {
                      .replace("x264", " ")
                      .replace("x265", " ")
                      .replace("h264", " ")
-                     .replace("h265", " ");
+                     .replace("h265", " ")
+                     .replace("h.264", " ")
+                     .replace("h.265", " ")
+                     .replace("5.1", " ")
+                     .replace("7.1", " ")
+                     .replace("2.0", " ");
                      
     if let Ok(re) = Regex::new(r"\[[0-9a-f]{8}\]") {
         cleaned = re.replace_all(&cleaned, " ").to_string();
@@ -2468,6 +2473,7 @@ mod tests {
         assert_eq!(parse_episode_from_filename("Clarksons Farm Season 1 Episode 2.mkv"), Some((Some(1), 2)));
         assert_eq!(parse_episode_from_filename("Clarksons Farm Season 4 Episode 05.mkv"), Some((Some(4), 5)));
         assert_eq!(parse_episode_from_filename("Season 1 - 02.mkv"), Some((Some(1), 2)));
+        assert_eq!(parse_episode_from_filename("The.Chosen.I.Have.Called.You.By.Name.1080p.WEB-DL.DDP5.1.H.264-NTb.mkv"), None);
     }
 
     #[test]

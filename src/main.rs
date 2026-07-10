@@ -31,9 +31,16 @@ async fn main() {
     // Set up tracing / logging
     println!("Starting Bitlab Stremio Addon...");
 
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36".parse().unwrap());
+    headers.insert("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/json".parse().unwrap());
+    headers.insert("Accept-Language", "en-US,en;q=0.9".parse().unwrap());
+    headers.insert("Cache-Control", "no-cache".parse().unwrap());
+
     let state = AppState {
         client: reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(6))
+            .timeout(std::time::Duration::from_secs(8))
+            .default_headers(headers)
             .build()
             .unwrap(),
         meta_cache: Arc::new(RwLock::new(HashMap::new())),

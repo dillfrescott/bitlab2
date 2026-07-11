@@ -54,10 +54,10 @@ async fn main() {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(3600)).await; // run hourly
             
-            // 1. Prune expired stream cache entries (older than 24 hours)
+            // 1. Prune expired stream cache entries (older than 1 hour)
             {
                 let mut cache = state_clone.stream_cache.write().await;
-                cache.retain(|_, (_, timestamp)| timestamp.elapsed().as_secs() < 86400);
+                cache.retain(|_, (_, timestamp)| timestamp.elapsed().as_secs() < scraper::STREAM_CACHE_TTL_SECS);
             }
             
             // 2. Clear meta cache if it grows too large (keep it under 5000 items)

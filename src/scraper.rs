@@ -4,8 +4,60 @@ use crate::cinemeta::fetch_meta;
 use serde::Deserialize;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
+
+static ANIME_CACHE: OnceLock<RwLock<HashMap<String, (bool, Option<String>)>>> = OnceLock::new();
+static ANIZIP_CACHE: OnceLock<RwLock<HashMap<String, Option<u32>>>> = OnceLock::new();
+
+pub const STREAM_CACHE_TTL_SECS: u64 = 3600; // 1 hour cache duration
+
+
+fn get_anime_cache() -> &'static RwLock<HashMap<String, (bool, Option<String>)>> {
+    ANIME_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn get_anizip_cache() -> &'static RwLock<HashMap<String, Option<u32>>> {
+    ANIZIP_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+async fn check_if_anime_and_get_romaji_cached(client: &reqwest::Client, english_title: &str, target_year: Option<&str>) -> (bool, Option<String>) {
+    let cache_key = format!("{}:{:?}", english_title.to_lowercase(), target_year);
+    {
+        let cache = get_anime_cache().read().await;
+        if let Some(cached) = cache.get(&cache_key) {
+            return cached.clone();
+        }
+    }
+    
+    let res = check_if_anime_and_get_romaji(client, english_title, target_year).await;
+    
+    {
+        let mut cache = get_anime_cache().write().await;
+        cache.insert(cache_key, res.clone());
+    }
+    
+    res
+}
+
+async fn fetch_anizip_absolute_episode_cached(client: &reqwest::Client, imdb_or_kitsu: &str, episode: u32) -> Option<u32> {
+    let cache_key = format!("{}:{}", imdb_or_kitsu, episode);
+    {
+        let cache = get_anizip_cache().read().await;
+        if let Some(cached) = cache.get(&cache_key) {
+            return *cached;
+        }
+    }
+    
+    let res = fetch_anizip_absolute_episode(client, imdb_or_kitsu, episode).await;
+    
+    {
+        let mut cache = get_anizip_cache().write().await;
+        cache.insert(cache_key, res);
+    }
+    
+    res
+}
 
 #[allow(dead_code)]
 #[derive(Deserialize, Debug)]
@@ -1643,7 +1695,8 @@ async fn check_if_anime_and_get_romaji(client: &reqwest::Client, english_title: 
 
 enum ScraperTaskResult {
     Streams(Vec<Stream>),
-    Meta(Option<(String, Option<String>)>),
+    MovieMeta(Option<(String, Option<String>, bool, Option<String>)>),
+    SeriesMeta(Option<(String, Option<String>, bool, Option<String>, Option<u32>)>),
 }
 
 // -----------------------------------------------------------------------------
@@ -1658,7 +1711,7 @@ pub async fn get_movie_streams(
     {
         let cache = stream_cache.read().await;
         if let Some((streams, timestamp)) = cache.get(imdb_id) {
-            if timestamp.elapsed().as_secs() < 86400 {
+            if timestamp.elapsed().as_secs() < STREAM_CACHE_TTL_SECS {
                 println!("[INFO] Returning cached streams for movie: {}", imdb_id);
                 return streams.clone();
             }
@@ -1682,12 +1735,17 @@ pub async fn get_movie_streams(
         ScraperTaskResult::Streams(scrape_apibay(&client_apibay_id, &imdb_id_clone2, "APIBay").await)
     });
 
-    // 2. Fetch metadata (Cinemeta / TVmaze / TMDb fallbacks)
+    // 2. Fetch metadata (Cinemeta / TVmaze / TMDb fallbacks) and check if anime
     let client_meta = client.clone();
     let meta_cache_clone = meta_cache.clone();
     let imdb_id_clone3 = imdb_id.to_string();
     set.spawn(async move {
-        ScraperTaskResult::Meta(fetch_meta_cached(&client_meta, &meta_cache_clone, "movie", &imdb_id_clone3).await)
+        if let Some((name, year)) = fetch_meta_cached(&client_meta, &meta_cache_clone, "movie", &imdb_id_clone3).await {
+            let (is_anime, romaji) = check_if_anime_and_get_romaji_cached(&client_meta, &name, year.as_deref()).await;
+            ScraperTaskResult::MovieMeta(Some((name, year, is_anime, romaji)))
+        } else {
+            ScraperTaskResult::MovieMeta(None)
+        }
     });
 
     let mut all_streams: Vec<Stream> = Vec::new();
@@ -1695,7 +1753,7 @@ pub async fn get_movie_streams(
     let mut resolved_romaji_name: Option<String> = None;
     let mut resolved_year: Option<String> = None;
     let mut meta_resolved = false;
-    let timeout_dur = std::time::Duration::from_millis(3500);
+    let timeout_dur = std::time::Duration::from_millis(6000);
 
     while !set.is_empty() {
         let elapsed = start_time.elapsed();
@@ -1720,14 +1778,12 @@ pub async fn get_movie_streams(
                             }
                         }
                     }
-                    ScraperTaskResult::Meta(meta_res) => {
+                    ScraperTaskResult::MovieMeta(meta_res) => {
                         if !meta_resolved {
                             meta_resolved = true;
-                            if let Some((name, year)) = meta_res {
+                            if let Some((name, year, is_anime, romaji_opt)) = meta_res {
                                 resolved_show_name = Some(name.clone());
                                 resolved_year = year.clone();
-                                
-                                let (is_anime, romaji_opt) = check_if_anime_and_get_romaji(client, &name, year.as_deref()).await;
                                 resolved_romaji_name = romaji_opt.clone();
 
                                 // Search queries: English Title and Romaji Title (if Anime)
@@ -1790,6 +1846,7 @@ pub async fn get_movie_streams(
                             }
                         }
                     }
+                    _ => {}
                 }
             }
             Ok(Some(Err(_))) => {}
@@ -1815,6 +1872,7 @@ pub async fn get_movie_streams(
     all_streams
 }
 
+
 // -----------------------------------------------------------------------------
 // Series Stream Resolution Coordinating Function
 // -----------------------------------------------------------------------------
@@ -1831,7 +1889,7 @@ pub async fn get_series_streams(
     {
         let cache = stream_cache.read().await;
         if let Some((streams, timestamp)) = cache.get(&cache_key) {
-            if timestamp.elapsed().as_secs() < 86400 {
+            if timestamp.elapsed().as_secs() < STREAM_CACHE_TTL_SECS {
                 println!("[INFO] Returning cached streams for series: {}", cache_key);
                 return streams.clone();
             }
@@ -1849,20 +1907,31 @@ pub async fn get_series_streams(
         ScraperTaskResult::Streams(scrape_eztv(&client_eztv, &imdb_id_eztv, season, episode).await)
     });
     
-    // 2. Fetch metadata
+    // 2. Fetch metadata and check anime & absolute episode
     let client_meta = client.clone();
     let meta_cache_clone = meta_cache.clone();
     let imdb_id_clone = imdb_id.to_string();
     set.spawn(async move {
-        ScraperTaskResult::Meta(fetch_meta_cached(&client_meta, &meta_cache_clone, "series", &imdb_id_clone).await)
+        let meta_fut = fetch_meta_cached(&client_meta, &meta_cache_clone, "series", &imdb_id_clone);
+        let anizip_fut = fetch_anizip_absolute_episode_cached(&client_meta, &imdb_id_clone, episode);
+        
+        let (meta_res, absolute_episode) = tokio::join!(meta_fut, anizip_fut);
+        
+        if let Some((name, year)) = meta_res {
+            let (is_anime, romaji) = check_if_anime_and_get_romaji_cached(&client_meta, &name, year.as_deref()).await;
+            ScraperTaskResult::SeriesMeta(Some((name, year, is_anime, romaji, absolute_episode)))
+        } else {
+            ScraperTaskResult::SeriesMeta(None)
+        }
     });
 
     let mut all_streams: Vec<Stream> = Vec::new();
     let mut resolved_show_name: Option<String> = None;
     let mut resolved_romaji_name: Option<String> = None;
     let mut resolved_year: Option<String> = None;
+    let mut resolved_absolute_episode: Option<u32> = None;
     let mut meta_resolved = false;
-    let timeout_dur = std::time::Duration::from_millis(3500);
+    let timeout_dur = std::time::Duration::from_millis(6000);
 
     while !set.is_empty() {
         let elapsed = start_time.elapsed();
@@ -1887,15 +1956,14 @@ pub async fn get_series_streams(
                             }
                         }
                     }
-                    ScraperTaskResult::Meta(meta_res) => {
+                    ScraperTaskResult::SeriesMeta(meta_res) => {
                         if !meta_resolved {
                             meta_resolved = true;
-                            if let Some((name, year)) = meta_res {
+                            if let Some((name, year, is_anime, romaji_opt, absolute_episode)) = meta_res {
                                 resolved_show_name = Some(name.clone());
                                 resolved_year = year.clone();
-                                
-                                let (is_anime, romaji_opt) = check_if_anime_and_get_romaji(client, &name, year.as_deref()).await;
                                 resolved_romaji_name = romaji_opt.clone();
+                                resolved_absolute_episode = absolute_episode;
 
                                 // Search queries: English Title and Romaji Title (if Anime)
                                 let mut queries = vec![name.clone()];
@@ -1945,8 +2013,6 @@ pub async fn get_series_streams(
 
                                     // Nyaa Anime search
                                     if is_anime {
-                                        let absolute_episode = fetch_anizip_absolute_episode(client, imdb_id, episode).await;
-
                                         let mut nyaa_queries = vec![
                                             format!("{} S{:02}E{:02}", cleaned_q, season, episode),
                                             format!("{} S{:02}", cleaned_q, season),
@@ -1970,6 +2036,7 @@ pub async fn get_series_streams(
                             }
                         }
                     }
+                    _ => {}
                 }
             }
             Ok(Some(Err(_))) => {}
@@ -1988,7 +2055,11 @@ pub async fn get_series_streams(
     // Resolve file indices for multi-file torrents (Season packs / Complete series)
     resolve_file_indices(client, torrent_files_cache, &mut all_streams, season, episode).await;
 
-    let absolute_episode = fetch_anizip_absolute_episode(client, imdb_id, episode).await;
+    let absolute_episode = if resolved_absolute_episode.is_some() {
+        resolved_absolute_episode
+    } else {
+        fetch_anizip_absolute_episode_cached(client, imdb_id, episode).await
+    };
 
     // Filter out matches that don't match the requested episode
     all_streams.retain(|s| {

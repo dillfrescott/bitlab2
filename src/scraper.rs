@@ -335,7 +335,7 @@ pub struct ParsedFilename {
     pub is_pack: bool,
 }
 
-pub fn parse_seasons_episodes(title: &str) -> (Vec<u32>, Vec<u32>, bool) {
+pub fn parse_seasons_episodes(title: &str, title_hints: &[&str]) -> (Vec<u32>, Vec<u32>, bool) {
     let is_valid_episode = |e: u32| -> bool {
         e != 1080 && e != 720 && e != 2160 && e != 480 && e != 576 && e != 360 && !(e >= 1900 && e <= 2099)
     };
@@ -379,7 +379,7 @@ pub fn parse_seasons_episodes(title: &str) -> (Vec<u32>, Vec<u32>, bool) {
     }
 
     // 3. Pattern: S01E01 or S01.E01 or S01_E01 or S01-E01 or S01E01E02 (multi-episode)
-    let sxx_exx = Regex::new(r"s(\d+)\s*[e\.\-_]\s*(\d+)").unwrap();
+    let sxx_exx = Regex::new(r"s(\d+)\s*(?:e|ep|\.e?p?|[\-_](?:e|p)+)\s*(\d+)").unwrap();
     for cap in sxx_exx.captures_iter(&title_lower) {
         if let (Ok(s), Ok(e)) = (cap[1].parse::<u32>(), cap[2].parse::<u32>()) {
             if !seasons.contains(&s) {
@@ -488,9 +488,18 @@ pub fn parse_seasons_episodes(title: &str) -> (Vec<u32>, Vec<u32>, bool) {
     // 10. Standalone episode number fallback (excluding digits belonging to season, year or resolution)
     let mut ep_clean = title_lower.clone();
     
-    // Remove season markers
-    let season_marker_re = Regex::new(r"\b(?:s|season)\s*\d+\b").unwrap();
-    ep_clean = season_marker_re.replace_all(&ep_clean, " ").to_string();
+    // Remove season markers and ranges
+    let s_range_prefix_re = Regex::new(r"\bs(?:easons?)?\s*\d+\s*(?:\-|\~|to|_)\s*s(?:easons?)?\s*\d+\b").unwrap();
+    ep_clean = s_range_prefix_re.replace_all(&ep_clean, " ").to_string();
+
+    let s_range_nospace_re = Regex::new(r"\bs(?:easons?)?\s*\d+(?:\-|\~|to)\d+\b").unwrap();
+    ep_clean = s_range_nospace_re.replace_all(&ep_clean, " ").to_string();
+
+    let s_pattern_re = Regex::new(r"\b(?:s|season)\s*\d+\b").unwrap();
+    ep_clean = s_pattern_re.replace_all(&ep_clean, " ").to_string();
+
+    let ord_season_re = Regex::new(r"\b\d+(?:st|nd|rd|th)\s+season\b").unwrap();
+    ep_clean = ord_season_re.replace_all(&ep_clean, " ").to_string();
     
     // Remove year markers
     let year_re = Regex::new(r"\b(19\d{2}|20\d{2})\b").unwrap();
@@ -521,6 +530,24 @@ pub fn parse_seasons_episodes(title: &str) -> (Vec<u32>, Vec<u32>, bool) {
         for cap in number_re.captures_iter(&ep_clean) {
             if let Ok(n) = cap[1].parse::<u32>() {
                 if n > 0 && n < 10000 && is_valid_episode(n) {
+                    // Check if this number is part of any of the target title hints
+                    let mut is_part_of_hint = false;
+                    for hint in title_hints {
+                        if !hint.is_empty() {
+                            let hint_lower = hint.to_lowercase();
+                            let hint_num_pattern = format!(r"\b{}\b", n);
+                            if let Ok(hint_re) = Regex::new(&hint_num_pattern) {
+                                if hint_re.is_match(&hint_lower) {
+                                    is_part_of_hint = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if is_part_of_hint {
+                        continue;
+                    }
+
                     if !episodes.contains(&n) {
                         episodes.push(n);
                     }
@@ -536,11 +563,11 @@ pub fn parse_seasons_episodes(title: &str) -> (Vec<u32>, Vec<u32>, bool) {
     (seasons, episodes, is_pack)
 }
 
-pub fn parse_filename(filename: &str) -> ParsedFilename {
+pub fn parse_filename(filename: &str, title_hints: &[&str]) -> ParsedFilename {
     let lower = filename.to_lowercase();
     
     // 1. Extract seasons, episodes, pack status
-    let (seasons, episodes, is_pack) = parse_seasons_episodes(filename);
+    let (seasons, episodes, is_pack) = parse_seasons_episodes(filename, title_hints);
 
     // 2. Extract year
     let mut year = None;
@@ -625,6 +652,24 @@ pub fn parse_filename(filename: &str) -> ParsedFilename {
                 if n != 1080 && n != 720 && n != 2160 && n != 480 && n != 360 && n != 576
                    && !(n >= 1900 && n <= 2099) && n > 0 && n < 10000 
                 {
+                    // Check if this number is part of any of the target title hints
+                    let mut is_part_of_hint = false;
+                    for hint in title_hints {
+                        if !hint.is_empty() {
+                            let hint_lower = hint.to_lowercase();
+                            let hint_num_pattern = format!(r"\b{}\b", n);
+                            if let Ok(hint_re) = Regex::new(&hint_num_pattern) {
+                                if hint_re.is_match(&hint_lower) {
+                                    is_part_of_hint = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if is_part_of_hint {
+                        continue;
+                    }
+
                     // Check if this is NOT a season number (preceded by s/season)
                     let start = whole_match.start();
                     let before = &lower[..start];
@@ -815,7 +860,11 @@ pub fn verify_torrent_match(
     target_season: Option<u32>,
     target_episode: Option<u32>,
 ) -> bool {
-    let parsed = parse_filename(torrent_title);
+    let mut hints = vec![meta_title];
+    if let Some(romaji) = romaji_title {
+        hints.push(romaji);
+    }
+    let parsed = parse_filename(torrent_title, &hints);
 
     // 1. Year Match
     if let Some(meta_y_str) = meta_year {
@@ -865,7 +914,11 @@ pub fn verify_torrent_match(
                 "ost", "soundtrack", "preview", "interview"
             ];
             
+            let is_pack = parsed.is_pack;
             for &kw in &ignore_keywords {
+                if is_pack && (kw == "special" || kw == "specials" || kw == "bonus" || kw == "extra" || kw == "extras" || kw == "ova" || kw == "ona") {
+                    continue;
+                }
                 if torrent_tokens.contains(kw) && !meta_tokens.contains(kw) && !romaji_tokens.contains(kw) {
                     return false;
                 }
@@ -2154,7 +2207,7 @@ pub async fn get_series_streams(
     });
 
     // Resolve file indices for multi-file torrents (Season packs / Complete series)
-    resolve_file_indices(client, torrent_files_cache, &mut all_streams, season, episode).await;
+    resolve_file_indices(client, torrent_files_cache, &mut all_streams, season, episode, resolved_show_name.clone()).await;
 
     let absolute_episode = if resolved_absolute_episode.is_some() {
         resolved_absolute_episode
@@ -2174,7 +2227,14 @@ pub async fn get_series_streams(
         if s.file_idx.is_some() {
             return true; 
         }
-        let parsed = parse_filename(&torrent_title);
+        let mut hints = Vec::new();
+        if let Some(show_name) = &resolved_show_name {
+            hints.push(show_name.as_str());
+        }
+        if let Some(romaji) = &resolved_romaji_name {
+            hints.push(romaji.as_str());
+        }
+        let parsed = parse_filename(&torrent_title, &hints);
         
         // If it's a pack and we couldn't resolve the exact file index, drop it
         if parsed.is_pack {
@@ -2455,6 +2515,7 @@ fn is_file_match(
     file_path: &str,
     target_season: u32,
     target_episode: u32,
+    show_name: Option<&str>,
 ) -> bool {
     let lower_path = file_path.to_lowercase();
     let is_video = lower_path.ends_with(".mkv")
@@ -2488,7 +2549,11 @@ fn is_file_match(
     }
 
     let filename = lower_path.split(|c| c == '/' || c == '\\').last().unwrap_or(&lower_path);
-    let (_, episodes, _) = parse_seasons_episodes(filename);
+    let mut hints = Vec::new();
+    if let Some(name) = show_name {
+        hints.push(name);
+    }
+    let (_, episodes, _) = parse_seasons_episodes(filename, &hints);
 
     if episodes.contains(&target_episode) {
         let season = parse_season_from_path(&lower_path);
@@ -2510,13 +2575,18 @@ pub async fn resolve_file_indices(
     streams: &mut [Stream],
     season: u32,
     episode: u32,
+    show_name: Option<String>,
 ) {
     let mut set = tokio::task::JoinSet::new();
     
     // Resolve only the top 15 seeders torrents to keep it fast
     for (idx, stream) in streams.iter().enumerate().take(15) {
         let torrent_title = extract_torrent_title(&stream.title);
-        let parsed = parse_filename(&torrent_title);
+        let mut hints = Vec::new();
+        if let Some(ref name) = show_name {
+            hints.push(name.as_str());
+        }
+        let parsed = parse_filename(&torrent_title, &hints);
         // Only resolve multi-file torrents (packs) to save HTTP requests and CPU time
         let is_multi_file = parsed.is_pack || parsed.episodes.len() > 1;
         if !is_multi_file {
@@ -2527,6 +2597,7 @@ pub async fn resolve_file_indices(
             let client = client.clone();
             let cache = torrent_files_cache.clone();
             let hash = hash.clone();
+            let show_name_clone = show_name.clone();
             
             set.spawn(async move {
                 let cached_files = {
@@ -2551,7 +2622,7 @@ pub async fn resolve_file_indices(
                 let mut matched_filename = None;
                 if let Some(ref files_list) = files {
                     for file in files_list {
-                        if is_file_match(&file.path, season, episode) {
+                        if is_file_match(&file.path, season, episode, show_name_clone.as_deref()) {
                             file_idx = Some(file.index);
                             matched_filename = Some(file.path.clone());
                             break;
@@ -2644,6 +2715,25 @@ mod tests {
         assert!(!verify_torrent_match("The Chosen S01E01 1080p", "The Chosen One", None, None, Some(1), Some(1)));
         assert!(verify_torrent_match("The Chosen S01E01 1080p", "The Chosen", None, None, Some(1), Some(1)));
 
+        // Shows with numbers in their name
+        assert!(verify_torrent_match("Zoey 101 S01E01 1080p", "Zoey 101", None, None, Some(1), Some(1)));
+        assert!(verify_torrent_match("Zoey.101.S01.NTSC.DVDR-P2P", "Zoey 101", None, None, Some(1), Some(1)));
+        assert!(verify_torrent_match("Mob Psycho 100 S01E01 1080p", "Mob Psycho 100", None, None, Some(1), Some(1)));
+        assert!(verify_torrent_match("9-1-1 S01E01 1080p", "9-1-1", None, None, Some(1), Some(1)));
+        assert!(verify_torrent_match("100 Humans S01E01 1080p", "100 Humans", None, None, Some(1), Some(1)));
+
+        // Bitsearch search result titles regression tests
+        assert!(verify_torrent_match("Zoey.101.2005.S01.1080p.DVD.UPSCALED.Opus.2.0.x265-edge2020", "Zoey 101", None, None, Some(1), Some(1)));
+        assert!(verify_torrent_match("Zoey 101 (2005) Season 1-4 S01-04 (480p AMZN WEBRIP x265 HEVC 10bit DDP 2.0 EDGE2020)", "Zoey 101", None, None, Some(1), Some(1)));
+        assert!(verify_torrent_match("Zoey 101 2005.S01-S04+Bonus Content.AI Remaster.Complete.Series.1080p.AAC2.0.English.German.Dutch.French-Zero00", "Zoey 101", None, None, Some(1), Some(1)));
+        assert!(verify_torrent_match("Zoey 101.S01.2005.720p.H265-Zero00", "Zoey 101", None, None, Some(1), Some(1)));
+        assert!(verify_torrent_match("Zoey 101 2005.S01-S04.720p.H265.10bit.EAC2.0-Zero00", "Zoey 101", None, None, Some(1), Some(1)));
+        assert!(verify_torrent_match("Zoey 101 S01 e01-13 Ita Eng by thegatto", "Zoey 101", None, None, Some(1), Some(1)));
+        assert!(verify_torrent_match("Zoey 101.2005.S01-S04.720p.Ai Upscale.H265.10bit-Zero00", "Zoey 101", None, None, Some(1), Some(1)));
+        assert!(verify_torrent_match("Zoey 101 s01 ENG - (traitant by mosilon)", "Zoey 101", None, None, Some(1), Some(1)));
+        assert!(verify_torrent_match("Zoey 101 S01", "Zoey 101", None, None, Some(1), Some(1)));
+        assert!(verify_torrent_match("Zoey 101.S01-S04.2005.576p.H265-Zero00", "Zoey 101", None, None, Some(1), Some(1)));
+
         // OVA/Special exclusion for regular seasons
         assert!(!verify_torrent_match("[Erai-raws] Re:Zero kara Hajimeru Isekai Seikatsu - OVA - 02 [1080p].mkv", show, None, None, Some(1), Some(2)));
         assert!(!verify_torrent_match("[SubsPlease] Re:Zero kara Hajimeru Isekai Seikatsu - Memory Snow (OVA) (1080p).mkv", show, None, None, Some(1), Some(2)));
@@ -2712,40 +2802,45 @@ mod tests {
 
     #[test]
     fn test_parse_seasons_episodes() {
-        assert_eq!(parse_seasons_episodes("Bocchi the Rock! - S01E01.mkv"), (vec![1], vec![1], false));
-        assert_eq!(parse_seasons_episodes("02.mp4"), (vec![], vec![2], false));
-        assert_eq!(parse_seasons_episodes("[SubsPlease] Bocchi the Rock! - 12 (1080p).mkv"), (vec![], vec![12], false));
-        assert_eq!(parse_seasons_episodes("Bocchi the Rock! - Ep 05.mkv"), (vec![], vec![5], false));
-        assert_eq!(parse_seasons_episodes("2x03.mkv"), (vec![2], vec![3], false));
-        assert_eq!(parse_seasons_episodes("Clarksons Farm Season 1 Episode 2.mkv"), (vec![1], vec![2], false));
-        assert_eq!(parse_seasons_episodes("Clarksons Farm Season 4 Episode 05.mkv"), (vec![4], vec![5], false));
-        assert_eq!(parse_seasons_episodes("Season 1 - 02.mkv"), (vec![1], vec![2], false));
+        assert_eq!(parse_seasons_episodes("Bocchi the Rock! - S01E01.mkv", &[]), (vec![1], vec![1], false));
+        assert_eq!(parse_seasons_episodes("02.mp4", &[]), (vec![], vec![2], false));
+        assert_eq!(parse_seasons_episodes("[SubsPlease] Bocchi the Rock! - 12 (1080p).mkv", &[]), (vec![], vec![12], false));
+        assert_eq!(parse_seasons_episodes("Bocchi the Rock! - Ep 05.mkv", &[]), (vec![], vec![5], false));
+        assert_eq!(parse_seasons_episodes("2x03.mkv", &[]), (vec![2], vec![3], false));
+        assert_eq!(parse_seasons_episodes("Clarksons Farm Season 1 Episode 2.mkv", &[]), (vec![1], vec![2], false));
+        assert_eq!(parse_seasons_episodes("Clarksons Farm Season 4 Episode 05.mkv", &[]), (vec![4], vec![5], false));
+        assert_eq!(parse_seasons_episodes("Season 1 - 02.mkv", &[]), (vec![1], vec![2], false));
         
         // Multi-episode range matches
-        let (s, e, pack) = parse_seasons_episodes("Bocchi the Rock! - S01E01-E10.mkv");
+        let (s, e, pack) = parse_seasons_episodes("Bocchi the Rock! - S01E01-E10.mkv", &[]);
         assert_eq!(s, vec![1]);
         assert_eq!(e, (1..=10).collect::<Vec<u32>>());
         assert!(pack);
 
         // Long episode index for anime (>1000)
-        let (_, e_long, _) = parse_seasons_episodes("[SubsPlease] One Piece - 1050 (1080p).mkv");
+        let (_, e_long, _) = parse_seasons_episodes("[SubsPlease] One Piece - 1050 (1080p).mkv", &[]);
         assert_eq!(e_long, vec![1050]);
 
         // Codec and audio channel exclusion testing
-        assert_eq!(parse_seasons_episodes("The.Chosen.S01.1080p.WEBRip.DDP5.1.Atmos.x264"), (vec![1], vec![], true));
+        assert_eq!(parse_seasons_episodes("The.Chosen.S01.1080p.WEBRip.DDP5.1.Atmos.x264", &[]), (vec![1], vec![], true));
     }
 
     #[test]
     fn test_parse_filename() {
-        let res = parse_filename("[SubsPlease] Bocchi the Rock! - 12 (1080p).mkv");
+        let res = parse_filename("[SubsPlease] Bocchi the Rock! - 12 (1080p).mkv", &[]);
         assert_eq!(res.base_title, "Bocchi the Rock");
         assert_eq!(res.episodes, vec![12]);
         assert_eq!(res.resolution, Some("1080p".to_string()));
 
-        let res2 = parse_filename("Clarkson's Farm S01 Complete 1080p");
+        let res2 = parse_filename("Clarkson's Farm S01 Complete 1080p", &[]);
         assert_eq!(res2.base_title, "Clarkson's Farm");
         assert_eq!(res2.seasons, vec![1]);
         assert!(res2.is_pack);
+
+        let res3 = parse_filename("Zoey.101.S01.NTSC.DVDR-P2P", &["Zoey 101"]);
+        assert_eq!(res3.base_title, "Zoey 101");
+        assert_eq!(res3.seasons, vec![1]);
+        assert!(res3.is_pack);
     }
 
     #[test]

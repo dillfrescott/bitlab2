@@ -336,6 +336,10 @@ pub struct ParsedFilename {
 }
 
 pub fn parse_seasons_episodes(title: &str) -> (Vec<u32>, Vec<u32>, bool) {
+    let is_valid_episode = |e: u32| -> bool {
+        e != 1080 && e != 720 && e != 2160 && e != 480 && e != 576 && e != 360 && !(e >= 1900 && e <= 2099)
+    };
+
     let mut seasons = Vec::new();
     let mut episodes = Vec::new();
     let mut is_pack = false;
@@ -366,7 +370,7 @@ pub fn parse_seasons_episodes(title: &str) -> (Vec<u32>, Vec<u32>, bool) {
             if e1 < e2 && e2 - e1 < 100 {
                 is_pack = true; 
                 for e in e1..=e2 {
-                    if !episodes.contains(&e) {
+                    if is_valid_episode(e) && !episodes.contains(&e) {
                         episodes.push(e);
                     }
                 }
@@ -381,7 +385,7 @@ pub fn parse_seasons_episodes(title: &str) -> (Vec<u32>, Vec<u32>, bool) {
             if !seasons.contains(&s) {
                 seasons.push(s);
             }
-            if !episodes.contains(&e) {
+            if is_valid_episode(e) && !episodes.contains(&e) {
                 episodes.push(e);
             }
         }
@@ -401,7 +405,7 @@ pub fn parse_seasons_episodes(title: &str) -> (Vec<u32>, Vec<u32>, bool) {
             if e1 < e2 && e2 - e1 < 100 {
                 is_pack = true;
                 for e in e1..=e2 {
-                    if !episodes.contains(&e) {
+                    if is_valid_episode(e) && !episodes.contains(&e) {
                         episodes.push(e);
                     }
                 }
@@ -416,7 +420,7 @@ pub fn parse_seasons_episodes(title: &str) -> (Vec<u32>, Vec<u32>, bool) {
             if !seasons.contains(&s) {
                 seasons.push(s);
             }
-            if !episodes.contains(&e) {
+            if is_valid_episode(e) && !episodes.contains(&e) {
                 episodes.push(e);
             }
         }
@@ -475,7 +479,7 @@ pub fn parse_seasons_episodes(title: &str) -> (Vec<u32>, Vec<u32>, bool) {
     let ep_pattern = Regex::new(r"\b(?:ep|episode|e)\s*(\d+)\b").unwrap();
     for cap in ep_pattern.captures_iter(&title_lower) {
         if let Ok(e) = cap[1].parse::<u32>() {
-            if !episodes.contains(&e) {
+            if is_valid_episode(e) && !episodes.contains(&e) {
                 episodes.push(e);
             }
         }
@@ -496,11 +500,27 @@ pub fn parse_seasons_episodes(title: &str) -> (Vec<u32>, Vec<u32>, bool) {
     let res_re = Regex::new(r"\b(2160p|1080p|720p|480p|576p|360p|4k|8k|1080i)\b").unwrap();
     ep_clean = res_re.replace_all(&ep_clean, " ").to_string();
 
+    // Remove codec markers (x264, x265, h264, h265, hevc, etc.)
+    let codec_re = Regex::new(r"\b(?:x|h)?26[45]\b|\bhevc\b|\bav1\b").unwrap();
+    ep_clean = codec_re.replace_all(&ep_clean, " ").to_string();
+
+    // Remove audio channel markers (5.1, 7.1, 2.0, etc.)
+    let audio_re = Regex::new(r"\d\.\d").unwrap();
+    ep_clean = audio_re.replace_all(&ep_clean, " ").to_string();
+
+    // Remove bit depth markers (10bit, 8bit, etc.)
+    let bit_re = Regex::new(r"\b\d+bits?\b").unwrap();
+    ep_clean = bit_re.replace_all(&ep_clean, " ").to_string();
+
+    // Remove version markers (v1, v2, v3, etc.)
+    let version_re = Regex::new(r"v\d+\b").unwrap();
+    ep_clean = version_re.replace_all(&ep_clean, " ").to_string();
+
     if episodes.is_empty() {
         let number_re = Regex::new(r"(?:\-\s*|\[|\b)(\d+)(?:\b|\])").unwrap();
         for cap in number_re.captures_iter(&ep_clean) {
             if let Ok(n) = cap[1].parse::<u32>() {
-                if n > 0 && n < 10000 {
+                if n > 0 && n < 10000 && is_valid_episode(n) {
                     if !episodes.contains(&n) {
                         episodes.push(n);
                     }
@@ -575,6 +595,7 @@ pub fn parse_filename(filename: &str) -> ParsedFilename {
     find_earliest_regex(r"\bepisode\b", &mut split_idx);
     find_earliest_regex(r"\bep\d+", &mut split_idx);
     find_earliest_regex(r"\be\d+", &mut split_idx);
+    find_earliest_regex(r"\b\d+v\d+\b", &mut split_idx);
     
     if let Some(m) = year_re.find(&lower) {
         let y_val = m.as_str().parse::<u32>().unwrap_or(0);
@@ -670,6 +691,61 @@ pub fn clean_title(title: &str) -> String {
         .join(" ")
 }
 
+fn is_allowed_extra_word(w: &str) -> bool {
+    if w.len() <= 1 {
+        return true;
+    }
+    // Check if it's numeric
+    if w.chars().all(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    
+    // Check if it's an ordinal (e.g. 1st, 2nd, 3rd, 4th)
+    if w.ends_with("st") || w.ends_with("nd") || w.ends_with("rd") || w.ends_with("th") {
+        let prefix = &w[..w.len() - 2];
+        if !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit()) {
+            return true;
+        }
+    }
+    
+    // Check roman numerals
+    let roman_numerals = ["i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"];
+    if roman_numerals.contains(&w) {
+        return true;
+    }
+
+    let allowed = [
+        // Media format/release
+        "season", "seasons", "series", "complete", "pack", "boxset", "box", "set", "collection", "anthology",
+        "volume", "vol", "part", "pt", "book", "chapters", "chapter", "saga", "arc", "cour", "show", "tv", "movie", "film",
+        "ova", "ona", "special", "specials", "bonus", "extras", "extra", "recap", "trailer", "teaser", "episode", "episodes",
+        // Version/edition
+        "edition", "versions", "version", "cut", "uncut", "extended", "remastered", "restored", "unrated", "rated",
+        "censored", "uncensored", "directors", "director", "imax", "widescreen", "fullscreen", "theatrical",
+        "live", "action", "animated", "cartoon", "3d", "2d", "4k", "uhd", "hd", "sd", "hdtv", "classic", "ultimate", "remix",
+        "original", "digital", "copy", "remaster", "retail",
+        // Language/audio/subtitle
+        "english", "eng", "japanese", "jap", "jp", "sub", "subs", "subbed", "subtitled", "dub", "dubs", "dubbed", "multi",
+        "multisubs", "dual", "audio", "bilingual", "lat", "latin", "esp", "espanol", "spanish", "fra", "french",
+        "ger", "german", "ita", "italian", "rus", "russian", "kor", "korean", "chi", "chinese", "mandarin",
+        "cantonese", "taiwanese", "viet", "vietnamese", "thai", "hindi", "tamil", "telugu",
+        // Encoding/source/codec
+        "rip", "webrip", "web", "webdl", "dl", "bluray", "brrip", "bdrip", "dvd", "dvdrip", "tvrip", "pdtv", "dsr", "sdtv", "ldtv",
+        "h264", "h265", "x264", "x265", "hevc", "av1", "mpeg", "divx", "xvid", "mp4", "mkv", "avi", "blu", "ray", "br", "bd", "tv",
+        // Audio codecs
+        "aac", "aac2", "aac5", "ac3", "dd5", "ddp5", "ddp7", "dts", "dtshd", "truehd", "atmos", "flac", "mp3", "soundtrack", "ost", "music", "songs",
+        // Bit depth
+        "8bit", "10bit", "12bit", "hi10p", "hi10",
+        // Release groups / sites / qualities
+        "yts", "tgx", "galaxyrg", "qxr", "vyto", "rarbg", "ettv", "eztv", "psa", "meghd", "megapack", "megustas", "megusta", "ion10", "fgt",
+        "screener", "scr", "cam", "telecined", "tc", "ts", "workprint", "wp", "hdr", "hdr10", "hdr10plus", "dv", "dolby", "vision", "hlg", "sdr",
+        // Common noise
+        "v2", "v3", "v4", "repack", "proper", "real", "readnfo", "nfo", "internal"
+    ];
+    
+    allowed.contains(&w)
+}
+
 pub fn is_title_match(torrent_base: &str, meta_title: &str) -> bool {
     let compact_torrent = to_compact_title(torrent_base);
     let compact_meta = to_compact_title(meta_title);
@@ -678,58 +754,53 @@ pub fn is_title_match(torrent_base: &str, meta_title: &str) -> bool {
         return true;
     }
 
-    if compact_torrent.contains(&compact_meta) || compact_meta.contains(&compact_torrent) {
-        if compact_torrent.len() > compact_meta.len() {
-            let extra = compact_torrent.replace(&compact_meta, "");
-            let spinoff_keywords = ["beyond", "world", "origins", "chronicles", "legacy", "bloodline", "universe", "dimension", "specials", "spinoff", "revelations", "reunion", "documentary"];
-            for kw in &spinoff_keywords {
-                if extra.contains(kw) {
-                    return false;
-                }
-            }
-            let clean_extra: String = extra.chars().filter(|c| c.is_alphabetic()).collect();
-            let media_keywords = ["season", "complete", "pack", "series", "edition", "uncut", "version", "english", "japanese", "sub", "dub", "multi", "dual", "audio", "part", "volume", "cour", "show", "collection", "movie", "film"];
-            let mut temp = clean_extra.clone();
-            for kw in &media_keywords {
-                temp = temp.replace(kw, "");
-            }
-            if temp.len() >= 6 {
-                return false; 
-            }
-        }
-        return true;
-    }
-
-    // Token set overlap logic
-    let filter_words = |t: &str| -> HashSet<String> {
+    let get_tokens = |t: &str| -> HashSet<String> {
         t.to_lowercase()
             .split(|c: char| !c.is_alphanumeric())
-            .filter(|w| w.len() >= 2 && w != &"the" && w != &"and" && w != &"for" && w != &"with" && w != &"of" && w != &"in" && w != &"to" && w != &"a" && w != &"an")
+            .filter(|w| !w.is_empty() && w != &"the" && w != &"and" && w != &"for" && w != &"with" && w != &"of" && w != &"in" && w != &"to" && w != &"a" && w != &"an" && w != &"or")
             .map(|s| s.to_string())
             .collect()
     };
 
-    let w_torrent = filter_words(torrent_base);
-    let w_meta = filter_words(meta_title);
+    let w_torrent = get_tokens(torrent_base);
+    if w_torrent.is_empty() {
+        return false;
+    }
 
-    if !w_torrent.is_empty() && !w_meta.is_empty() {
-        if w_meta.is_subset(&w_torrent) {
-            let extra_words: Vec<&String> = w_torrent.difference(&w_meta).collect();
-            let spinoff_keywords = ["beyond", "world", "origins", "chronicles", "legacy", "bloodline", "universe", "dimension", "specials", "spinoff", "revelations", "reunion", "documentary"];
-            for w in &extra_words {
-                if spinoff_keywords.contains(&w.as_str()) {
-                    return false;
+    let mut variations = vec![meta_title.to_string()];
+    
+    if let Some((left, _)) = meta_title.split_once(':') {
+        variations.push(left.to_string());
+    }
+    if let Some((left, _)) = meta_title.split_once(" - ") {
+        variations.push(left.to_string());
+    }
+    if let Some((left, _)) = meta_title.split_once('(') {
+        variations.push(left.to_string());
+    }
+
+    for var in variations {
+        let w_var = get_tokens(&var);
+        if w_var.is_empty() {
+            continue;
+        }
+
+        if w_var.is_subset(&w_torrent) {
+            let extra_words: Vec<&String> = w_torrent.difference(&w_var).collect();
+            let mut all_extra_allowed = true;
+            for w in extra_words {
+                if !is_allowed_extra_word(w) {
+                    all_extra_allowed = false;
+                    break;
                 }
             }
-            let media_keywords = ["season", "complete", "pack", "series", "edition", "uncut", "version", "english", "japanese", "sub", "dub", "multi", "dual", "audio", "part", "volume", "cour", "show", "collection", "movie", "film"];
-            let filtered_extra: Vec<&&String> = extra_words.iter().filter(|w| !media_keywords.contains(&w.as_str())).collect();
-            if filtered_extra.len() >= 2 {
-                return false;
+            if all_extra_allowed {
+                return true;
             }
-            return true;
-        }
-        if w_torrent.is_subset(&w_meta) {
-            return true;
+        } else if w_torrent.is_subset(&w_var) {
+            if w_torrent.len() >= 2 {
+                return true;
+            }
         }
     }
 
@@ -771,6 +842,36 @@ pub fn verify_torrent_match(
 
     // 3. Series Season / Episode Match
     if let Some(ts) = target_season {
+        if ts > 0 {
+            // Check for special/OVA/movie keywords that are not part of the target show name.
+            let lower_title = torrent_title.to_lowercase();
+            let lower_meta = meta_title.to_lowercase();
+            let lower_romaji = romaji_title.map(|r| r.to_lowercase());
+            
+            let get_clean_tokens = |t: &str| -> HashSet<String> {
+                t.split(|c: char| !c.is_alphanumeric())
+                    .filter(|w| !w.is_empty())
+                    .map(|s| s.to_string())
+                    .collect()
+            };
+            
+            let meta_tokens = get_clean_tokens(&lower_meta);
+            let romaji_tokens = lower_romaji.as_ref().map(|r| get_clean_tokens(r)).unwrap_or_default();
+            let torrent_tokens = get_clean_tokens(&lower_title);
+            
+            let ignore_keywords = [
+                "ova", "ona", "special", "specials", "movie", "film", "recap", 
+                "teaser", "trailer", "bonus", "extra", "extras", "nced", "ncop", 
+                "ost", "soundtrack", "preview", "interview"
+            ];
+            
+            for &kw in &ignore_keywords {
+                if torrent_tokens.contains(kw) && !meta_tokens.contains(kw) && !romaji_tokens.contains(kw) {
+                    return false;
+                }
+            }
+        }
+
         if !parsed.seasons.is_empty() && !parsed.seasons.contains(&ts) {
             return false;
         }
@@ -2063,10 +2164,16 @@ pub async fn get_series_streams(
 
     // Filter out matches that don't match the requested episode
     all_streams.retain(|s| {
+        let torrent_title = extract_torrent_title(&s.title);
+        if let Some(show_name) = &resolved_show_name {
+            if !verify_torrent_match(&torrent_title, show_name, resolved_romaji_name.as_deref(), resolved_year.as_deref(), Some(season), Some(episode)) {
+                return false;
+            }
+        }
+
         if s.file_idx.is_some() {
             return true; 
         }
-        let torrent_title = extract_torrent_title(&s.title);
         let parsed = parse_filename(&torrent_title);
         
         // If it's a pack and we couldn't resolve the exact file index, drop it
@@ -2531,6 +2638,18 @@ mod tests {
 
         // Season 1 protection: S1 Episode 2 should not match S2 Episode 2
         assert!(!verify_torrent_match("[Erai-raws] Re:Zero kara Hajimeru Isekai Seikatsu - 02 [1080p].mkv", show, None, None, Some(2), Some(2)));
+
+        // The Chosen vs The Chosen One
+        assert!(!verify_torrent_match("The Chosen One S01E01 1080p", "The Chosen", None, None, Some(1), Some(1)));
+        assert!(!verify_torrent_match("The Chosen S01E01 1080p", "The Chosen One", None, None, Some(1), Some(1)));
+        assert!(verify_torrent_match("The Chosen S01E01 1080p", "The Chosen", None, None, Some(1), Some(1)));
+
+        // OVA/Special exclusion for regular seasons
+        assert!(!verify_torrent_match("[Erai-raws] Re:Zero kara Hajimeru Isekai Seikatsu - OVA - 02 [1080p].mkv", show, None, None, Some(1), Some(2)));
+        assert!(!verify_torrent_match("[SubsPlease] Re:Zero kara Hajimeru Isekai Seikatsu - Memory Snow (OVA) (1080p).mkv", show, None, None, Some(1), Some(2)));
+        
+        // OVA/Special allowed for Season 0 (specials) or None (movies/general)
+        assert!(verify_torrent_match("[Erai-raws] Re:Zero kara Hajimeru Isekai Seikatsu - OVA - 02 [1080p].mkv", show, None, None, Some(0), Some(2)));
     }
 
     #[test]
@@ -2611,6 +2730,9 @@ mod tests {
         // Long episode index for anime (>1000)
         let (_, e_long, _) = parse_seasons_episodes("[SubsPlease] One Piece - 1050 (1080p).mkv");
         assert_eq!(e_long, vec![1050]);
+
+        // Codec and audio channel exclusion testing
+        assert_eq!(parse_seasons_episodes("The.Chosen.S01.1080p.WEBRip.DDP5.1.Atmos.x264"), (vec![1], vec![], true));
     }
 
     #[test]

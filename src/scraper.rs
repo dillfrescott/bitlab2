@@ -779,7 +779,7 @@ fn extract_xml_tag(xml: &str, tag_name: &str) -> Option<String> {
 // 1. YTS Movie Scraper
 async fn scrape_single_yts(client: reqwest::Client, url: String) -> Vec<Stream> {
     let mut streams = Vec::new();
-    let req = client.get(&url).timeout(std::time::Duration::from_millis(6000));
+    let req = client.get(&url).timeout(std::time::Duration::from_millis(3000));
     
     if let Ok(resp) = req.send().await {
         if let Ok(json_resp) = resp.json::<YtsSearchResponse>().await {
@@ -877,7 +877,7 @@ pub async fn scrape_apibay(
     let encoded_query = urlencoding::encode(query);
     let url = format!("https://apibay.org/q.php?q={}&cat=0", encoded_query);
     
-    let req = client.get(&url).timeout(std::time::Duration::from_millis(6000));
+    let req = client.get(&url).timeout(std::time::Duration::from_millis(3000));
         
     let resp = match req.send().await {
         Ok(r) => r,
@@ -947,7 +947,7 @@ async fn scrape_single_tpb(
     provider_label: String,
 ) -> Vec<Stream> {
     let mut streams = Vec::new();
-    let req = client.get(&url).timeout(std::time::Duration::from_millis(6000));
+    let req = client.get(&url).timeout(std::time::Duration::from_millis(3000));
         
     let html_text = match req.send().await {
         Ok(resp) => match resp.text().await {
@@ -1091,7 +1091,7 @@ pub async fn scrape_bitsearch(
     let encoded_query = urlencoding::encode(query);
     let url = format!("https://bitsearch.to/api/v1/search?q={}&limit=50&sort=seeders", encoded_query);
     
-    let req = client.get(&url).timeout(std::time::Duration::from_millis(6000));
+    let req = client.get(&url).timeout(std::time::Duration::from_millis(3000));
         
     let resp = match req.send().await {
         Ok(r) => r,
@@ -1179,7 +1179,7 @@ async fn scrape_single_solidtorrent(
     provider_label: String,
 ) -> Vec<Stream> {
     let mut streams = Vec::new();
-    let req = client.get(&url).timeout(std::time::Duration::from_millis(6000));
+    let req = client.get(&url).timeout(std::time::Duration::from_millis(3000));
         
     if let Ok(resp) = req.send().await {
         if resp.status().is_success() {
@@ -1274,7 +1274,7 @@ pub async fn scrape_solidtorrents(
 // 6. Nyaa Anime Scraper
 async fn scrape_single_nyaa(client: reqwest::Client, url: String) -> Vec<Stream> {
     let mut streams = Vec::new();
-    let req = client.get(&url).timeout(std::time::Duration::from_millis(6000));
+    let req = client.get(&url).timeout(std::time::Duration::from_millis(3000));
         
     if let Ok(resp) = req.send().await {
         if resp.status().is_success() {
@@ -1370,7 +1370,7 @@ async fn scrape_single_eztv(
         domain, clean_imdb_id
     );
     
-    let req = client.get(&url).timeout(std::time::Duration::from_millis(6000));
+    let req = client.get(&url).timeout(std::time::Duration::from_millis(3000));
         
     let resp_text = match req.send().await {
         Ok(resp) => match resp.text().await {
@@ -1499,7 +1499,7 @@ pub async fn fetch_meta_cached(
     // 1. Try Cinemeta (Main Stremio Metadata Provider)
     let cinemeta_fut = fetch_meta(client, r#type, imdb_id);
     let cinemeta_res = tokio::time::timeout(
-        std::time::Duration::from_millis(4000),
+        std::time::Duration::from_millis(1500),
         cinemeta_fut
     ).await;
     
@@ -1514,7 +1514,7 @@ pub async fn fetch_meta_cached(
     if r#type == "series" {
         println!("[INFO] Cinemeta timed out. Trying TVmaze fallback for: {}", imdb_id);
         let url = format!("https://api.tvmaze.com/lookup/shows?imdb={}", imdb_id);
-        let req = client.get(&url).timeout(std::time::Duration::from_millis(4000));
+        let req = client.get(&url).timeout(std::time::Duration::from_millis(1500));
         if let Ok(resp) = req.send().await {
             if resp.status().is_success() {
                 #[derive(Deserialize)]
@@ -1536,7 +1536,7 @@ pub async fn fetch_meta_cached(
     // 3. Fallback to Community TMDb Stremio Addon
     println!("[INFO] Trying TMDb Addon fallback for: {}", imdb_id);
     let url = format!("https://94c8cb97ae04-tmdb-addon.baby-beamup.club/meta/{}/{}.json", r#type, imdb_id);
-    let req = client.get(&url).timeout(std::time::Duration::from_millis(4000));
+    let req = client.get(&url).timeout(std::time::Duration::from_millis(1500));
     if let Ok(resp) = req.send().await {
         if resp.status().is_success() {
             #[derive(Deserialize)]
@@ -1571,7 +1571,7 @@ async fn check_if_anime_and_get_romaji(client: &reqwest::Client, english_title: 
     let req = client.get(&url)
         .header("Accept", "application/vnd.api+json")
         .header("Content-Type", "application/vnd.api+json")
-        .timeout(std::time::Duration::from_millis(4000));
+        .timeout(std::time::Duration::from_millis(1500));
     
     if let Ok(resp) = req.send().await {
         if resp.status().is_success() {
@@ -1695,7 +1695,7 @@ pub async fn get_movie_streams(
     let mut resolved_romaji_name: Option<String> = None;
     let mut resolved_year: Option<String> = None;
     let mut meta_resolved = false;
-    let timeout_dur = std::time::Duration::from_millis(6000);
+    let timeout_dur = std::time::Duration::from_millis(3500);
 
     while !set.is_empty() {
         let elapsed = start_time.elapsed();
@@ -1806,7 +1806,7 @@ pub async fn get_movie_streams(
     });
 
     // Save to cache
-    {
+    if meta_resolved {
         let mut cache = stream_cache.write().await;
         cache.insert(imdb_id.to_string(), (all_streams.clone(), std::time::Instant::now()));
     }
@@ -1862,7 +1862,7 @@ pub async fn get_series_streams(
     let mut resolved_romaji_name: Option<String> = None;
     let mut resolved_year: Option<String> = None;
     let mut meta_resolved = false;
-    let timeout_dur = std::time::Duration::from_millis(6000);
+    let timeout_dur = std::time::Duration::from_millis(3500);
 
     while !set.is_empty() {
         let elapsed = start_time.elapsed();
@@ -1908,14 +1908,10 @@ pub async fn get_series_streams(
                                     
                                     // 1. Query for exact episode: "Show Name S01E01"
                                     let query_exact = format!("{} S{:02}E{:02}", cleaned_q, season, episode);
-                                    // 2. Query for alternative episode layout: "Show Name 1x01"
-                                    let query_alt = format!("{} {}x{:02}", cleaned_q, season, episode);
-                                    // 3. Query for season pack: "Show Name S01"
+                                    // 2. Query for season pack: "Show Name S01"
                                     let query_season = format!("{} S{:02}", cleaned_q, season);
-                                    // 4. Query for complete show: "Show Name Complete"
-                                    let query_complete = format!("{} Complete", cleaned_q);
 
-                                    let search_queries = vec![query_exact, query_alt, query_season, query_complete];
+                                    let search_queries = vec![query_exact, query_season];
 
                                     for sq in search_queries {
                                         // Spawn SolidTorrents search
@@ -1954,16 +1950,13 @@ pub async fn get_series_streams(
                                         let mut nyaa_queries = vec![
                                             format!("{} S{:02}E{:02}", cleaned_q, season, episode),
                                             format!("{} S{:02}", cleaned_q, season),
-                                            cleaned_q.clone()
                                         ];
                                         
                                         // Add absolute episode search for Anime
                                         if let Some(abs_ep) = absolute_episode {
                                             nyaa_queries.push(format!("{} {:02}", cleaned_q, abs_ep));
-                                            nyaa_queries.push(format!("{} {}", cleaned_q, abs_ep));
                                         } else {
                                             nyaa_queries.push(format!("{} {:02}", cleaned_q, episode));
-                                            nyaa_queries.push(format!("{} {}", cleaned_q, episode));
                                         }
 
                                         for nq in nyaa_queries {
@@ -2026,7 +2019,7 @@ pub async fn get_series_streams(
     });
 
     // Save to cache
-    {
+    if meta_resolved {
         let mut cache = stream_cache.write().await;
         cache.insert(cache_key, (all_streams.clone(), std::time::Instant::now()));
     }
@@ -2218,7 +2211,7 @@ async fn fetch_torrent_files_list(
         set.spawn(async move {
             let req = client_clone.get(&url)
                 .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                .timeout(std::time::Duration::from_millis(6000));
+                .timeout(std::time::Duration::from_millis(3000));
             if let Ok(resp) = req.send().await {
                 if resp.status().is_success() {
                     if let Some(content_type) = resp.headers().get("content-type") {
@@ -2344,6 +2337,14 @@ pub async fn resolve_file_indices(
     
     // Resolve only the top 15 seeders torrents to keep it fast
     for (idx, stream) in streams.iter().enumerate().take(15) {
+        let torrent_title = extract_torrent_title(&stream.title);
+        let parsed = parse_filename(&torrent_title);
+        // Only resolve multi-file torrents (packs) to save HTTP requests and CPU time
+        let is_multi_file = parsed.is_pack || parsed.episodes.len() > 1;
+        if !is_multi_file {
+            continue;
+        }
+
         if let Some(ref hash) = stream.info_hash {
             let client = client.clone();
             let cache = torrent_files_cache.clone();
@@ -2385,7 +2386,7 @@ pub async fn resolve_file_indices(
         }
     }
     
-    let resolve_timeout = std::time::Duration::from_millis(6000);
+    let resolve_timeout = std::time::Duration::from_millis(2000);
     let _ = tokio::time::timeout(resolve_timeout, async {
         while let Some(res) = set.join_next().await {
             if let Ok((idx, file_idx, matched_filename, hash)) = res {
@@ -2415,7 +2416,7 @@ pub async fn fetch_anizip_absolute_episode(client: &reqwest::Client, imdb_or_kit
     
     let req = client.get(&url)
         .header("User-Agent", "Mozilla/5.0")
-        .timeout(std::time::Duration::from_millis(6000));
+        .timeout(std::time::Duration::from_millis(3000));
         
     if let Ok(resp) = req.send().await {
         if let Ok(data) = resp.json::<AniZipResponse>().await {

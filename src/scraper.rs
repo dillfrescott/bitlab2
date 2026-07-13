@@ -154,6 +154,32 @@ fn normalize_info_hash(hash: &str) -> String {
     cleaned.to_lowercase()
 }
 
+/// Returns true if the info hash is the all-zeros sentinel some torrent indexes
+/// (notably APIBay) use to mark a "no real torrent" / placeholder row.
+fn is_zero_info_hash(hash: &str) -> bool {
+    let h = hash.trim();
+    !h.is_empty() && h.chars().all(|c| c == '0')
+}
+
+/// Extracts the start (premiere) year from a metadata year string that may be a
+/// range (e.g. "2005-2008" or "2005–2008") or a single year ("2023").
+/// Returns None if no 4-digit year is found. Used to build search queries so we
+/// never send a raw range like "2005-2008" to an index (which matches nothing).
+fn extract_start_year(year: &str) -> Option<String> {
+    let year_re = Regex::new(r"\b(19\d{2}|20\d{2})\b").unwrap();
+    year_re.captures(year).map(|c| c[1].to_string())
+}
+
+/// Returns true if an APIBay torrent row represents a real, indexable torrent
+/// (i.e. not the "No results returned" sentinel and not an all-zeros hash).
+fn is_apibay_result_valid(name: &str, info_hash: &str) -> bool {
+    !name.is_empty()
+        && !info_hash.is_empty()
+        && name != "No results returned"
+        && name != "No results found"
+        && !is_zero_info_hash(info_hash)
+}
+
 #[allow(dead_code)]
 fn build_magnet_url(info_hash: &str, display_name: &str) -> String {
     let normalized = normalize_info_hash(info_hash);
@@ -909,14 +935,14 @@ pub fn verify_torrent_match(
             let torrent_tokens = get_clean_tokens(&lower_title);
             
             let ignore_keywords = [
-                "ova", "ona", "special", "specials", "movie", "film", "recap", 
-                "teaser", "trailer", "bonus", "extra", "extras", "nced", "ncop", 
-                "ost", "soundtrack", "preview", "interview"
+                "ova", "ona", "special", "specials", "movie", "film", "recap",
+                "teaser", "trailer", "bonus", "extra", "extras", "nced", "ncop",
+                "ost", "soundtrack", "preview", "interview", "commentary"
             ];
             
             let is_pack = parsed.is_pack;
             for &kw in &ignore_keywords {
-                if is_pack && (kw == "special" || kw == "specials" || kw == "bonus" || kw == "extra" || kw == "extras" || kw == "ova" || kw == "ona") {
+                if is_pack && (kw == "special" || kw == "specials" || kw == "bonus" || kw == "extra" || kw == "extras" || kw == "ova" || kw == "ona" || kw == "commentary") {
                     continue;
                 }
                 if torrent_tokens.contains(kw) && !meta_tokens.contains(kw) && !romaji_tokens.contains(kw) {
@@ -1103,7 +1129,7 @@ pub async fn scrape_apibay(
     for torrent in torrents {
         let name = torrent.name.unwrap_or_default();
         let info_hash = torrent.info_hash.unwrap_or_default();
-        if name.is_empty() || info_hash.is_empty() || name == "No results found" {
+        if !is_apibay_result_valid(&name, &info_hash) {
             continue;
         }
         
@@ -1949,7 +1975,11 @@ pub async fn get_movie_streams(
                                 for q in queries {
                                     let cleaned_q = clean_title(&q);
                                     let query_with_year = if let Some(yr) = &year {
-                                        format!("{} {}", cleaned_q, yr)
+                                        if let Some(start_yr) = extract_start_year(yr) {
+                                            format!("{} {}", cleaned_q, start_yr)
+                                        } else {
+                                            cleaned_q.clone()
+                                        }
                                     } else {
                                         cleaned_q.clone()
                                     };
@@ -2132,8 +2162,17 @@ pub async fn get_series_streams(
                                     let query_exact = format!("{} S{:02}E{:02}", cleaned_q, season, episode);
                                     // 2. Query for season pack: "Show Name S01"
                                     let query_season = format!("{} S{:02}", cleaned_q, season);
-
-                                    let search_queries = vec![query_exact, query_season];
+                                    // 3. Bare-title query catches torrents that don't use the SxxExx / Sxx convention (common for older shows). The season/episode filter narrows results.
+                                    let query_bare = cleaned_q.clone();
+                                    // 4. Year-qualified query disambiguates shows that share a name and matches torrents that include the premiere year.
+                                    let mut search_queries = vec![query_exact, query_season, query_bare];
+                                    if let Some(yr) = &year {
+                                        // Cinemeta may return a range like "2005-2008"; use only the
+                                        // start year so the query matches indexes that list the premiere year.
+                                        if let Some(start_yr) = extract_start_year(yr) {
+                                            search_queries.push(format!("{} {}", cleaned_q, start_yr));
+                                        }
+                                    }
 
                                     for sq in search_queries {
                                         // Spawn SolidTorrents search
@@ -2538,8 +2577,7 @@ fn is_file_match(
 
     if target_season > 0 {
         let ignore_keywords = [
-            "nced", "ncop", "ost", "soundtrack", "bonus", "extras", "extra", 
-            "special", "ova", "preview", "trailer", "recap", "interview"
+            "nced", "ncop", "ost", "soundtrack", "bonus", "extras", "extra", "special", "ova", "preview", "trailer", "recap", "interview", "commentary", "featurette", "making of", "behind the scenes", "bloopers", "gag reel", "deleted scene", "outtakes"
         ];
         for kw in ignore_keywords {
             if lower_path.contains(kw) {
@@ -2849,5 +2887,191 @@ mod tests {
         assert_eq!(parse_season_from_path("S3/01.mkv"), Some(3));
         assert_eq!(parse_season_from_path("2nd Season/01.mkv"), Some(2));
         assert_eq!(parse_season_from_path("Bocchi the Rock/01.mkv"), None);
+    }
+    // ---- Issue 1: older shows returning no results ---------------------------
+
+    // Mirrors the search-query construction used in get_series_streams so we
+    // can assert that a bare-title query and a year-qualified query are emitted.
+    fn build_series_search_queries(cleaned_q: &str, year: Option<&str>, season: u32, episode: u32) -> Vec<String> {
+        let query_exact = format!("{} S{:02}E{:02}", cleaned_q, season, episode);
+        let query_season = format!("{} S{:02}", cleaned_q, season);
+        let query_bare = cleaned_q.to_string();
+        let mut search_queries = vec![query_exact, query_season, query_bare];
+        if let Some(yr) = year {
+            // Cinemeta may return a range like "2005-2008"; use only the start year.
+            if let Some(start_yr) = extract_start_year(yr) {
+                search_queries.push(format!("{} {}", cleaned_q, start_yr));
+            }
+        }
+        search_queries
+    }
+
+    #[test]
+    fn test_series_queries_include_bare_title_and_year() {
+        let queries = build_series_search_queries("Drake and Josh", Some("2004"), 1, 1);
+        assert!(queries.iter().any(|q| q == "Drake and Josh"), "bare title query missing: {:?}", queries);
+        assert!(queries.iter().any(|q| q == "Drake and Josh 2004"), "year-qualified query missing: {:?}", queries);
+        assert!(queries.iter().any(|q| q == "Drake and Josh S01E01"), "exact query missing: {:?}", queries);
+        assert!(queries.iter().any(|q| q == "Drake and Josh S01"), "season query missing: {:?}", queries);
+    }
+
+    #[test]
+    fn test_series_queries_without_year_still_has_bare_title() {
+        let queries = build_series_search_queries("Zoey 101", None, 2, 5);
+        assert!(queries.iter().any(|q| q == "Zoey 101"), "bare title query missing: {:?}", queries);
+        assert!(queries.iter().any(|q| q == "Zoey 101 S02E05"), "exact query missing: {:?}", queries);
+        assert!(!queries.iter().any(|q| q == "Zoey 101 2005"), "unexpected year query when year is None: {:?}", queries);
+    }
+
+    // A torrent named with the 1x01 convention (no SxxExx) should still verify
+    // against the requested season/episode so bare-title search results are kept.
+    #[test]
+    fn test_verify_match_accepts_xtorrent_for_bare_query() {
+        let torrent_title = "Drake and Josh 1x01 HDTV XviD-LOL";
+        let accepted = verify_torrent_match(
+            torrent_title,
+            "Drake and Josh",
+            None,
+            Some("2004"),
+            Some(1),
+            Some(1),
+        );
+        assert!(accepted, "1x01 torrent should match S1E1, but was rejected");
+    }
+
+    // ---- Issue 2: commentary clip playing instead of the episode -----------
+
+    #[test]
+    fn test_is_file_match_rejects_commentary() {
+        let show = "SpongeBob SquarePants";
+        let commentary = "Season 01/S01E01 Commentary by the Cast.mkv";
+        assert!(!is_file_match(commentary, 1, 1, Some(show)),
+            "commentary file must NOT be selected as the episode");
+    }
+
+    #[test]
+    fn test_is_file_match_rejects_other_bonus_files() {
+        let show = "SpongeBob SquarePants";
+        for path in [
+            "Season 01/Behind the Scenes.mkv",
+            "Season 01/Bloopers.mkv",
+            "Season 01/Featurette.mkv",
+            "Season 01/Making of.mkv",
+            "Season 01/Gag Reel.mkv",
+            "Season 01/Outtakes.mkv",
+            "Season 01/Deleted Scene.mkv",
+        ] {
+            assert!(!is_file_match(path, 1, 1, Some(show)),
+                "bonus file {:?} must NOT be selected as the episode", path);
+        }
+    }
+
+    #[test]
+    fn test_is_file_match_accepts_real_episode() {
+        let show = "SpongeBob SquarePants";
+        let ep = "Season 01/SpongeBob SquarePants S01E01 Help Wanted.mkv";
+        assert!(is_file_match(ep, 1, 1, Some(show)),
+            "real episode file should be selected");
+    }
+
+    #[test]
+    fn test_is_file_match_rejects_sample_and_non_video() {
+        let show = "SpongeBob SquarePants";
+        assert!(!is_file_match("Season 01/Sample.mkv", 1, 1, Some(show)),
+            "sample file must be rejected");
+        assert!(!is_file_match("Season 01/S01E01.nfo", 1, 1, Some(show)),
+            "non-video file must be rejected");
+    }
+
+    #[test]
+    fn test_verify_match_rejects_single_commentary_release() {
+        let torrent_title = "SpongeBob SquarePants S01E01 Commentary 1080p WEB";
+        let accepted = verify_torrent_match(
+            torrent_title,
+            "SpongeBob SquarePants",
+            None,
+            None,
+            Some(1),
+            Some(1),
+        );
+        assert!(!accepted, "single-episode commentary release should be rejected");
+    }
+
+    #[test]
+    fn test_verify_match_accepts_pack_that_mentions_commentary() {
+        // A season pack whose title happens to mention "commentary" (e.g. it
+        // includes commentary tracks among real episodes) should still be
+        // accepted so resolve_file_indices can pick the right file.
+        let torrent_title = "SpongeBob SquarePants Season 01 1-12 Complete With Commentary 1080p";
+        let accepted = verify_torrent_match(
+            torrent_title,
+            "SpongeBob SquarePants",
+            None,
+            None,
+            Some(1),
+            Some(1),
+        );
+        assert!(accepted, "pack mentioning commentary should be accepted (file-level filter handles it)");
+    }
+
+    // ---- Issue 3: year-range query should use start year only --------------
+
+    #[test]
+    fn test_extract_start_year_single_year() {
+        assert_eq!(extract_start_year("2005"), Some("2005".to_string()));
+        assert_eq!(extract_start_year("2023"), Some("2023".to_string()));
+    }
+
+    #[test]
+    fn test_extract_start_year_range_with_hyphen() {
+        assert_eq!(extract_start_year("2005-2008"), Some("2005".to_string()));
+    }
+
+    #[test]
+    fn test_extract_start_year_range_with_en_dash() {
+        assert_eq!(extract_start_year("2005–2008"), Some("2005".to_string()));
+    }
+
+    #[test]
+    fn test_extract_start_year_no_year() {
+        assert_eq!(extract_start_year(""), None);
+        assert_eq!(extract_start_year("N/A"), None);
+    }
+
+    #[test]
+    fn test_series_queries_year_range_uses_start_year() {
+        let queries = build_series_search_queries("Zoey 101", Some("2005-2008"), 1, 1);
+        assert!(queries.iter().any(|q| q == "Zoey 101 2005"),
+            "year-qualified query should use start year only: {:?}", queries);
+        assert!(!queries.iter().any(|q| q == "Zoey 101 2005-2008"),
+            "raw range query must not be emitted: {:?}", queries);
+        assert!(queries.iter().any(|q| q == "Zoey 101"),
+            "bare title query missing: {:?}", queries);
+    }
+
+    // ---- Issue 4: APIBay "no results" sentinel must be filtered -------------
+
+    #[test]
+    fn test_is_zero_info_hash() {
+        assert!(is_zero_info_hash("0000000000000000000000000000000000000000"));
+        assert!(is_zero_info_hash("  0000000000000000000000000000000000000000  "));
+        assert!(!is_zero_info_hash("4fbfc100705fed2fc483da3e11d1b4bc5ba97264"));
+        assert!(!is_zero_info_hash(""));
+    }
+
+    #[test]
+    fn test_is_apibay_result_valid_rejects_sentinels() {
+        assert!(!is_apibay_result_valid("No results returned", "0000000000000000000000000000000000000000"));
+        assert!(!is_apibay_result_valid("No results found", "0000000000000000000000000000000000000000"));
+        assert!(!is_apibay_result_valid("Some Real Release", "0000000000000000000000000000000000000000"));
+        assert!(!is_apibay_result_valid("", "4fbfc100705fed2fc483da3e11d1b4bc5ba97264"));
+        assert!(!is_apibay_result_valid("Some Real Release", ""));
+    }
+
+    #[test]
+    fn test_is_apibay_result_valid_accepts_real_torrent() {
+        assert!(is_apibay_result_valid(
+            "Zoey 101 Season 1 Complete WEB-DL x264 [i_c]",
+            "8FA30FAFE88B8516A545113E9B732FEE17D4CB06"));
     }
 }

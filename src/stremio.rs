@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 use serde::{Deserialize, Serialize};
 
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Manifest {
@@ -35,7 +34,6 @@ pub struct CatalogExtra {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<Vec<String>>,
 }
-
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]

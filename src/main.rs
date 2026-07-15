@@ -1,17 +1,17 @@
-mod stremio;
 mod cinemeta;
 mod scraper;
+mod stremio;
 
 use axum::{
+    Router,
     extract::{Path, Request, State},
     http::{HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{Html, IntoResponse, Json, Response},
     routing::get,
-    Router,
 };
-use stremio::{Manifest, StreamResponse, Stream};
 use std::net::SocketAddr;
+use stremio::{Manifest, Stream, StreamResponse};
 use tower_http::cors::{Any, CorsLayer};
 
 use std::collections::HashMap;
@@ -53,13 +53,15 @@ async fn main() {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(3600)).await; // run hourly
-            
+
             // 1. Prune expired stream cache entries (older than 1 hour)
             {
                 let mut cache = state_clone.stream_cache.write().await;
-                cache.retain(|_, (_, timestamp)| timestamp.elapsed().as_secs() < scraper::STREAM_CACHE_TTL_SECS);
+                cache.retain(|_, (_, timestamp)| {
+                    timestamp.elapsed().as_secs() < scraper::STREAM_CACHE_TTL_SECS
+                });
             }
-            
+
             // 2. Clear meta cache if it grows too large (keep it under 5000 items)
             {
                 let mut cache = state_clone.meta_cache.write().await;
@@ -101,8 +103,11 @@ async fn main() {
         .unwrap_or(3000);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     println!("Listening on http://{}", addr);
-    println!("Addon manifest is available at http://{}/manifest.json", addr);
-    
+    println!(
+        "Addon manifest is available at http://{}/manifest.json",
+        addr
+    );
+
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
@@ -142,7 +147,17 @@ async fn stream_handler(
 
     let streams = match r#type.as_str() {
         "movie" => {
-            scraper::get_movie_streams(&state.client, &state.meta_cache, &state.stream_cache, clean_id).await
+            if is_valid_imdb_id(clean_id) {
+                scraper::get_movie_streams(
+                    &state.client,
+                    &state.meta_cache,
+                    &state.stream_cache,
+                    clean_id,
+                )
+                .await
+            } else {
+                Vec::new()
+            }
         }
         "series" => {
             // Series IDs are formatted as imdb_id:season:episode
@@ -150,15 +165,41 @@ async fn stream_handler(
             let parts: Vec<&str> = clean_id.split(':').collect();
             if parts.len() == 3 {
                 if parts[0] == "kitsu" {
-                    let kitsu_id = format!("kitsu:{}", parts[1]);
-                    let episode = parts[2].parse::<u32>().unwrap_or(1);
-                    // Kitsu does not have seasons, default to season 1
-                    scraper::get_series_streams(&state.client, &state.meta_cache, &state.stream_cache, &state.torrent_files_cache, &kitsu_id, 1, episode).await
+                    match (parts[1].parse::<u64>(), parts[2].parse::<u32>()) {
+                        (Ok(kitsu_id), Ok(episode)) if kitsu_id > 0 && episode > 0 => {
+                            let kitsu_id = format!("kitsu:{}", kitsu_id);
+                            // Kitsu uses absolute episode numbering and has no
+                            // season component in its Stremio video ID.
+                            scraper::get_series_streams(
+                                &state.client,
+                                &state.meta_cache,
+                                &state.stream_cache,
+                                &state.torrent_files_cache,
+                                &kitsu_id,
+                                1,
+                                episode,
+                            )
+                            .await
+                        }
+                        _ => Vec::new(),
+                    }
                 } else {
                     let imdb_id = parts[0];
-                    let season = parts[1].parse::<u32>().unwrap_or(1);
-                    let episode = parts[2].parse::<u32>().unwrap_or(1);
-                    scraper::get_series_streams(&state.client, &state.meta_cache, &state.stream_cache, &state.torrent_files_cache, imdb_id, season, episode).await
+                    match (parts[1].parse::<u32>(), parts[2].parse::<u32>()) {
+                        (Ok(season), Ok(episode)) if is_valid_imdb_id(imdb_id) && episode > 0 => {
+                            scraper::get_series_streams(
+                                &state.client,
+                                &state.meta_cache,
+                                &state.stream_cache,
+                                &state.torrent_files_cache,
+                                imdb_id,
+                                season,
+                                episode,
+                            )
+                            .await
+                        }
+                        _ => Vec::new(),
+                    }
                 }
             } else {
                 Vec::new()
@@ -168,9 +209,21 @@ async fn stream_handler(
     };
 
     let mut headers = HeaderMap::new();
-    headers.insert("Cache-Control", "max-age=0, no-cache, no-store, must-revalidate".parse().unwrap());
-    
+    headers.insert(
+        "Cache-Control",
+        "max-age=0, no-cache, no-store, must-revalidate"
+            .parse()
+            .unwrap(),
+    );
+
     (headers, Json(StreamResponse { streams })).into_response()
+}
+
+fn is_valid_imdb_id(id: &str) -> bool {
+    let Some(digits) = id.strip_prefix("tt") else {
+        return false;
+    };
+    digits.len() >= 7 && digits.chars().all(|c| c.is_ascii_digit())
 }
 
 async fn landing_handler(headers: HeaderMap) -> impl IntoResponse {
@@ -293,10 +346,7 @@ async fn landing_handler(headers: HeaderMap) -> impl IntoResponse {
     Html(html_content)
 }
 
-async fn host_validation_middleware(
-    req: Request,
-    next: Next,
-) -> Result<Response, StatusCode> {
+async fn host_validation_middleware(req: Request, next: Next) -> Result<Response, StatusCode> {
     if let Ok(allowed_url) = std::env::var("ALLOWED_URL") {
         // Extract host header (prefer X-Forwarded-Host if behind a proxy)
         let host = req
@@ -305,16 +355,16 @@ async fn host_validation_middleware(
             .or_else(|| req.headers().get("host"))
             .and_then(|h| h.to_str().ok())
             .unwrap_or("");
-            
+
         // Extract protocol
         let proto = req
             .headers()
             .get("x-forwarded-proto")
             .and_then(|p| p.to_str().ok())
             .unwrap_or("http");
-            
+
         let request_url = format!("{}://{}", proto, host);
-        
+
         if let (Some(req_parsed), Some(allow_parsed)) = (
             parse_scheme_host_port(&request_url),
             parse_scheme_host_port(&allowed_url),
@@ -334,7 +384,7 @@ async fn host_validation_middleware(
             return Err(StatusCode::FORBIDDEN);
         }
     }
-    
+
     Ok(next.run(req).await)
 }
 
@@ -344,11 +394,11 @@ fn parse_scheme_host_port(url_str: &str) -> Option<(String, String, Option<u16>)
         return None;
     }
     let scheme = parts[0].to_lowercase();
-    
+
     // Split by '/' to remove path, e.g. "bitlab.dill.moe/manifest.json" -> "bitlab.dill.moe"
     let host_port_path: Vec<&str> = parts[1].splitn(2, '/').collect();
     let host_port = host_port_path[0];
-    
+
     let host_port_parts: Vec<&str> = host_port.splitn(2, ':').collect();
     let host = host_port_parts[0].to_lowercase();
     let mut port = None;
@@ -357,13 +407,13 @@ fn parse_scheme_host_port(url_str: &str) -> Option<(String, String, Option<u16>)
             port = Some(p);
         }
     }
-    
+
     let normalized_port = match (scheme.as_str(), port) {
         ("http", Some(80)) => None,
         ("https", Some(443)) => None,
         _ => port,
     };
-    
+
     Some((scheme, host, normalized_port))
 }
 
@@ -397,9 +447,15 @@ mod tests {
             parse_scheme_host_port("http://127.0.0.1:80/"),
             Some(("http".to_string(), "127.0.0.1".to_string(), None))
         );
-        assert_eq!(
-            parse_scheme_host_port("invalid_url"),
-            None
-        );
+        assert_eq!(parse_scheme_host_port("invalid_url"), None);
+    }
+
+    #[test]
+    fn test_validate_imdb_id() {
+        assert!(is_valid_imdb_id("tt0111161"));
+        assert!(is_valid_imdb_id("tt12345678"));
+        assert!(!is_valid_imdb_id("tt123"));
+        assert!(!is_valid_imdb_id("tt1234abc"));
+        assert!(!is_valid_imdb_id("kitsu:1"));
     }
 }

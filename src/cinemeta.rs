@@ -17,7 +17,10 @@ pub async fn fetch_meta(
     r#type: &str,
     imdb_id: &str,
 ) -> Option<CinemetaMeta> {
-    let url = format!("https://v3-cinemeta.strem.io/meta/{}/{}.json", r#type, imdb_id);
+    let url = format!(
+        "https://v3-cinemeta.strem.io/meta/{}/{}.json",
+        r#type, imdb_id
+    );
     let resp = client.get(&url).send().await.ok()?;
     let data: CinemetaResponse = resp.json().await.ok()?;
     data.meta
